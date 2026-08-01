@@ -133,7 +133,9 @@ function createTestOptions(overrides: Partial<CLIOptions> = {}): CLIOptions {
     nonstop: false,
     limit: 20,
     showLinks: false,
-    apiKey: TEST_API_KEY,
+    seat: 'economy',
+    adults: 1,
+    excludeBasicEconomy: false,
     ...overrides,
   };
 }
@@ -213,7 +215,7 @@ describe('CLI Integration Tests', () => {
       });
 
       const validatedDates = validateOptions(options);
-      const config = loadConfig(TEST_API_KEY);
+      const config = loadConfig();
       const searchParams = buildSearchParams(options, validatedDates, config);
       const searchService = createSearchPipeline();
       const result = await searchService.search(searchParams);
@@ -268,7 +270,7 @@ describe('CLI Integration Tests', () => {
       });
 
       const validatedDates = validateOptions(options);
-      const config = loadConfig(TEST_API_KEY);
+      const config = loadConfig();
       const searchParams = buildSearchParams(options, validatedDates, config);
       const searchService = createSearchPipeline();
       const result = await searchService.search(searchParams);
@@ -319,7 +321,7 @@ describe('CLI Integration Tests', () => {
       });
 
       const validatedDates = validateOptions(options);
-      const config = loadConfig('invalid-api-key');
+      const config = loadConfig();
       const searchParams = buildSearchParams(options, validatedDates, config);
       const searchService = createSearchPipeline('invalid-api-key');
 
@@ -332,21 +334,11 @@ describe('CLI Integration Tests', () => {
       }
     });
 
-    it('should throw ConfigError when no API key is provided', () => {
-      // Remove env vars
-      const originalEnv = { ...process.env };
-      delete process.env.RAPIDAPI_KEY;
-      delete process.env.KIWI_API_KEY;
-
-      try {
-        loadConfig(undefined);
-        expect.fail('Should have thrown ConfigError');
-      } catch (error: unknown) {
-        const err = error as Error;
-        expect(err.message).toContain('RAPIDAPI_KEY');
-      } finally {
-        process.env = originalEnv;
-      }
+    it('should not throw ConfigError when no API key is provided (no longer required)', () => {
+      // loadConfig no longer requires an API key since we migrated to Google Flights scraping
+      const config = loadConfig();
+      expect(config).toBeDefined();
+      expect(config.googleFlightsBaseUrl).toBe('https://www.google.com/travel/flights');
     });
   });
 
@@ -378,7 +370,7 @@ describe('CLI Integration Tests', () => {
       });
 
       const validatedDates = validateOptions(options);
-      const config = loadConfig(TEST_API_KEY);
+      const config = loadConfig();
       const searchParams = buildSearchParams(options, validatedDates, config);
       const searchService = createSearchPipeline();
       const result = await searchService.search(searchParams);
@@ -413,7 +405,7 @@ describe('CLI Integration Tests', () => {
       });
 
       const validatedDates = validateOptions(options);
-      const config = loadConfig(TEST_API_KEY);
+      const config = loadConfig();
       const searchParams = buildSearchParams(options, validatedDates, config);
       const searchService = createSearchPipeline();
       const result = await searchService.search(searchParams);
@@ -498,7 +490,7 @@ describe('CLI Integration Tests', () => {
       });
 
       const validatedDates = validateOptions(options);
-      const config = loadConfig(TEST_API_KEY);
+      const config = loadConfig();
       const searchParams = buildSearchParams(options, validatedDates, config);
       const searchService = createSearchPipeline();
       const result = await searchService.search(searchParams);
@@ -561,7 +553,7 @@ describe('CLI Integration Tests', () => {
       });
 
       const validatedDates = validateOptions(options);
-      const config = loadConfig(TEST_API_KEY);
+      const config = loadConfig();
       const searchParams = buildSearchParams(options, validatedDates, config);
       const searchService = createSearchPipeline();
       const result = await searchService.search(searchParams);

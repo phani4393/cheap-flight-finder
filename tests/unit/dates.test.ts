@@ -3,14 +3,13 @@
  * Tests for src/utils/dates.ts
  */
 
-import { describe, it, expect } from 'vitest';
 import { 
   formatForKiwiApi, 
   formatForDisplay, 
   formatTime, 
   isDateInPast, 
   formatDuration 
-} from '../../src/utils/dates';
+} from '../../src/utils/dates.js';
 
 describe('formatForKiwiApi', () => {
   it('should format date as DD/MM/YYYY', () => {

@@ -51,6 +51,9 @@ export interface FlightResult {
   /** Kiwi deep link for booking */
   bookingUrl: string;
   
+  /** Whether the fare is a basic economy fare */
+  isBasicEconomy?: boolean;
+  
   // Round-trip specific fields (optional)
   
   /** Return flight departure date */
@@ -106,6 +109,24 @@ export interface SearchParams {
   
   /** Maximum number of results to return */
   limit: number;
+  
+  /** Cabin class for the flight search */
+  seatClass?: 'economy' | 'premium-economy' | 'business' | 'first';
+  
+  /** Number of adult passengers (1–9) */
+  adults?: number;
+  
+  /** Minimum departure time filter in HH:mm format (inclusive) */
+  departureAfter?: string;
+  
+  /** Maximum departure time filter in HH:mm format (inclusive) */
+  departureBefore?: string;
+  
+  /** Maximum flight duration in minutes */
+  maxDuration?: number;
+  
+  /** Exclude basic economy fares from results */
+  excludeBasicEconomy?: boolean;
 }
 
 /**

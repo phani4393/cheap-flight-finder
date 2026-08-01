@@ -69,6 +69,9 @@ describe('Feature: cheap-flight-finder, Property 4: Past Date Rejection', () => 
             nonstop: false,
             limit: 20,
             showLinks: false,
+            seat: 'economy',
+            adults: 1,
+            excludeBasicEconomy: false,
           };
 
           // validateOptions should throw before any API call would be made
@@ -121,6 +124,9 @@ describe('Feature: cheap-flight-finder, Property 4: Past Date Rejection', () => 
             nonstop: false,
             limit: 20,
             showLinks: false,
+            seat: 'economy',
+            adults: 1,
+            excludeBasicEconomy: false,
           };
 
           // validateOptions should throw before any API call would be made

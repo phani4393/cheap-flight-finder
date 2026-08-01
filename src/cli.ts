@@ -4,13 +4,14 @@
  * Main entry point for the cheap-flight-finder application.
  * Handles argument parsing and orchestrates the search flow.
  * 
- * **Validates: Requirements 3.4, 3.5, 6.1, 6.2, 6.3, 8.2, 9.1, 9.3, 10.4, 11.1, 11.2, 11.3**
+ * **Validates: Requirements 3.4, 3.5, 5.1, 5.2, 5.3, 6.1, 6.2, 6.3, 7.1, 7.2, 7.3, 7.4, 8.1, 8.2, 8.3, 9.1, 9.2, 10.4**
  */
 
 import { Command } from 'commander';
 import { addDays, parse, differenceInDays, startOfDay } from 'date-fns';
 import { loadConfig } from './config.js';
 import { ValidationError, AppError } from './errors.js';
+import { GoogleFlightsAdapter } from './adapters/google-flights/index.js';
 import { SkyscannerAdapter } from './adapters/skyscanner.js';
 import { SearchService } from './services/search.js';
 import { formatOutput, formatNoResults } from './formatters/table.js';
@@ -18,7 +19,14 @@ import { CsvExportService } from './formatters/csv.js';
 import { openInBrowser } from './utils/browser.js';
 import { isDateInPast } from './utils/dates.js';
 import { RetryHandler } from './utils/retry.js';
+import type { IFlightAdapter } from './adapters/skyscanner.js';
 import type { SearchParams, OriginAirport, FlightResult } from './types.js';
+
+/**
+ * Valid seat class values for the --seat CLI option.
+ */
+const VALID_SEAT_CLASSES = ['economy', 'premium-economy', 'business', 'first'] as const;
+type SeatClass = typeof VALID_SEAT_CLASSES[number];
 
 /**
  * CLI Options interface representing all parsed command-line arguments.
@@ -66,8 +74,94 @@ export interface CLIOptions {
   /** Export results to CSV file */
   export?: string;
   
-  /** Override RAPIDAPI_KEY environment variable */
+  /** Cabin class: economy, premium-economy, business, first (default: economy) */
+  seat: SeatClass;
+  
+  /** Number of adult passengers 1–9 (default: 1) */
+  adults: number;
+  
+  /** Minimum departure time in HH:mm format */
+  departureAfter?: string;
+  
+  /** Maximum departure time in HH:mm format */
+  departureBefore?: string;
+  
+  /** Maximum flight duration in minutes */
+  maxDuration?: number;
+  
+  /** Exclude basic economy fares */
+  excludeBasicEconomy: boolean;
+  
+  /** Backend to use: google (free, may get blocked) or rapidapi (needs key, reliable) */
+  backend: 'google' | 'rapidapi';
+  
+  /** RapidAPI key (required when --backend rapidapi) */
   apiKey?: string;
+}
+
+/**
+ * Validates that the seat class is one of the allowed values.
+ * 
+ * @param seat - The seat class string to validate
+ * @throws {ValidationError} If the seat class is invalid
+ * 
+ * **Validates: Requirement 5.3**
+ */
+export function validateSeatClass(seat: string): void {
+  if (!VALID_SEAT_CLASSES.includes(seat as SeatClass)) {
+    throw new ValidationError(
+      `Invalid seat class: "${seat}". Must be one of: ${VALID_SEAT_CLASSES.join(', ')}`
+    );
+  }
+}
+
+/**
+ * Validates that the adults count is an integer between 1 and 9.
+ * 
+ * @param adults - The number of adults to validate
+ * @throws {ValidationError} If adults is not an integer 1–9
+ * 
+ * **Validates: Requirement 6.3**
+ */
+export function validateAdults(adults: number): void {
+  if (!Number.isInteger(adults) || adults < 1 || adults > 9) {
+    throw new ValidationError(
+      `Invalid adults count: ${adults}. Must be an integer between 1 and 9`
+    );
+  }
+}
+
+/**
+ * Validates that a time string matches HH:mm format (00:00–23:59).
+ * 
+ * @param time - The time string to validate
+ * @throws {ValidationError} If the time format is invalid
+ * 
+ * **Validates: Requirement 7.4**
+ */
+export function validateTimeFormat(time: string): void {
+  const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
+  if (!timeRegex.test(time)) {
+    throw new ValidationError(
+      `Invalid time format: "${time}". Must be HH:mm (00:00–23:59)`
+    );
+  }
+}
+
+/**
+ * Validates that max duration is a positive integer.
+ * 
+ * @param duration - The max duration in minutes to validate
+ * @throws {ValidationError} If duration is not a positive integer
+ * 
+ * **Validates: Requirement 8.3**
+ */
+export function validateMaxDuration(duration: number): void {
+  if (!Number.isInteger(duration) || duration <= 0) {
+    throw new ValidationError(
+      `Invalid max-duration: ${duration}. Must be a positive integer (minutes)`
+    );
+  }
 }
 
 /**
@@ -147,8 +241,42 @@ export function parseArgs(): CLIOptions {
       'Export results to CSV file'
     )
     .option(
+      '--seat <CLASS>',
+      'Cabin class: economy, premium-economy, business, first',
+      'economy'
+    )
+    .option(
+      '--adults <N>',
+      'Number of adult passengers (1-9)',
+      (value: string) => parseInt(value, 10),
+      1
+    )
+    .option(
+      '--departure-after <HH:mm>',
+      'Only show flights departing after this time'
+    )
+    .option(
+      '--departure-before <HH:mm>',
+      'Only show flights departing before this time'
+    )
+    .option(
+      '--max-duration <MINUTES>',
+      'Maximum flight duration in minutes',
+      (value: string) => parseInt(value, 10)
+    )
+    .option(
+      '--exclude-basic-economy',
+      'Exclude basic economy fares',
+      false
+    )
+    .option(
+      '--backend <TYPE>',
+      'Backend: google (free, may get blocked) or rapidapi (needs RAPIDAPI_KEY)',
+      'google'
+    )
+    .option(
       '--api-key <KEY>',
-      'Override RAPIDAPI_KEY environment variable'
+      'RapidAPI key (required when --backend rapidapi, or set RAPIDAPI_KEY env var)'
     )
     .addHelpText('after', `
 Examples:
@@ -158,6 +286,9 @@ Examples:
   cheap-flights --round-trip --return-days 3-5  # Round-trip, 3-5 day trips
   cheap-flights --max-price 75 --limit 10 # Cheapest 10 under $75
   cheap-flights --export deals.csv        # Save to file
+  cheap-flights --seat business --adults 2  # Business class, 2 passengers
+  cheap-flights --departure-after 08:00 --departure-before 18:00  # Daytime flights
+  cheap-flights --backend rapidapi --api-key YOUR_KEY  # Use RapidAPI (reliable)
 `);
 
   program.parse();
@@ -179,7 +310,14 @@ Examples:
     showLinks: opts.showLinks,
     open: opts.open,
     export: opts.export,
-    apiKey: opts.apiKey
+    seat: opts.seat as SeatClass,
+    adults: opts.adults,
+    departureAfter: opts.departureAfter,
+    departureBefore: opts.departureBefore,
+    maxDuration: opts.maxDuration,
+    excludeBasicEconomy: opts.excludeBasicEconomy,
+    backend: opts.backend as 'google' | 'rapidapi',
+    apiKey: opts.apiKey,
   };
 }
 
@@ -288,11 +426,30 @@ export function validateReturnDays(returnDays: string): { min: number; max: numb
  * @returns Validated date range
  * @throws {ValidationError} If any validation fails
  * 
- * **Validates: Requirements 3.4, 3.5**
+ * **Validates: Requirements 3.4, 3.5, 5.3, 6.3, 7.4, 8.3**
  */
 export function validateOptions(options: CLIOptions): { dateFrom: Date; dateTo: Date; returnDaysMin?: number; returnDaysMax?: number } {
   // Validate airport code
   validateAirportCode(options.from);
+  
+  // Validate seat class
+  validateSeatClass(options.seat);
+  
+  // Validate adults count
+  validateAdults(options.adults);
+  
+  // Validate departure time filters
+  if (options.departureAfter) {
+    validateTimeFormat(options.departureAfter);
+  }
+  if (options.departureBefore) {
+    validateTimeFormat(options.departureBefore);
+  }
+  
+  // Validate max-duration
+  if (options.maxDuration !== undefined) {
+    validateMaxDuration(options.maxDuration);
+  }
   
   let dateFrom: Date;
   let dateTo: Date;
@@ -344,7 +501,7 @@ export function validateOptions(options: CLIOptions): { dateFrom: Date; dateTo: 
  * @param config - Application configuration
  * @returns SearchParams for the search service
  * 
- * **Validates: Requirements 3.3, 9.1, 9.3**
+ * **Validates: Requirements 3.3, 5.1, 5.2, 6.1, 6.2, 7.1, 7.2, 8.1, 9.1, 9.2**
  */
 export function buildSearchParams(
   options: CLIOptions,
@@ -391,6 +548,12 @@ export function buildSearchParams(
     nonstopOnly: options.nonstop,
     airlineFilter,
     limit,
+    seatClass: options.seat,
+    adults: options.adults,
+    departureAfter: options.departureAfter,
+    departureBefore: options.departureBefore,
+    maxDuration: options.maxDuration,
+    excludeBasicEconomy: options.excludeBasicEconomy,
   };
 }
 
@@ -471,16 +634,16 @@ export async function handleOpenBrowser(
  * Main entry point for the CLI application.
  * Parses arguments, validates options, and orchestrates the search flow.
  * 
- * **Validates: Requirements 3.3, 3.4, 3.5, 6.1, 6.2, 6.3, 8.2, 9.1, 9.3, 10.4**
+ * **Validates: Requirements 3.3, 3.4, 3.5, 5.1, 5.2, 5.3, 6.1, 6.2, 6.3, 7.1, 7.2, 7.3, 7.4, 8.1, 8.2, 8.3, 9.1, 9.2, 10.4**
  */
 export async function main(): Promise<void> {
   const options = parseArgs();
   
-  // Task 8.2: Validate options
+  // Validate options (includes seat class, adults, time format, max-duration)
   const validatedDates = validateOptions(options);
   
-  // Task 8.5: Load configuration and validate API key
-  const config = loadConfig(options.apiKey);
+  // Load configuration (no API key needed)
+  const config = loadConfig();
   
   // Build SearchParams from CLI options
   const searchParams = buildSearchParams(options, validatedDates, {
@@ -489,24 +652,38 @@ export async function main(): Promise<void> {
     defaultLimit: config.defaultLimit,
   });
   
-  // Create the search service with the Skyscanner adapter
+  // Create the search service with the selected backend adapter
   const retryHandler = new RetryHandler();
-  const flightAdapter = new SkyscannerAdapter(config.rapidApiKey, retryHandler, config.apiBaseUrl);
+  let flightAdapter: IFlightAdapter;
+  
+  if (options.backend === 'rapidapi') {
+    const apiKey = options.apiKey ?? process.env.RAPIDAPI_KEY;
+    if (!apiKey) {
+      throw new ValidationError(
+        'RapidAPI key required when using --backend rapidapi.\n' +
+        'Set RAPIDAPI_KEY env var or pass --api-key YOUR_KEY'
+      );
+    }
+    flightAdapter = new SkyscannerAdapter(apiKey, retryHandler);
+  } else {
+    flightAdapter = new GoogleFlightsAdapter(retryHandler);
+  }
+  
   const searchService = new SearchService(flightAdapter);
   
   // Execute the search
   const searchResult = await searchService.search(searchParams);
   const flights = searchResult.flights;
   
-  // Task 8.6: Display results or no-results message
+  // Display results or no-results message
   displayResults(flights, searchParams, options);
   
-  // Task 8.8: Handle export if requested
+  // Handle export if requested
   if (options.export) {
     await handleExport(flights, options.export, searchParams);
   }
   
-  // Task 8.8: Handle open in browser if requested
+  // Handle open in browser if requested
   if (options.open !== undefined) {
     if (flights.length === 0) {
       throw new ValidationError('No results to open. Cannot use --open with empty results');

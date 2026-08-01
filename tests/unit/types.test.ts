@@ -3,7 +3,6 @@
  * Verifies that type definitions are correctly exported and usable.
  */
 
-import { describe, it, expect } from 'vitest';
 import type { 
   OriginAirport, 
   FlightResult, 

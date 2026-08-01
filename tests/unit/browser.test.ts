@@ -5,8 +5,8 @@
  * Validates: Requirements 8.2
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { openInBrowser } from '../../src/utils/browser';
+import { vi } from 'vitest';
+import { openInBrowser } from '../../src/utils/browser.js';
 
 // Mock the 'open' package
 vi.mock('open', () => ({

@@ -5,7 +5,7 @@
  * Validates: Requirements 1.1, 1.2, 2.1, 2.2, 5.1, 5.2, 5.3, 5.5
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { vi } from 'vitest';
 import {
   transformToKiwiRequest,
   formatDateForKiwi,

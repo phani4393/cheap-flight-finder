@@ -55,6 +55,10 @@ export interface SkyscannerSearchRequest {
   limit: number;
   /** Sort order */
   sort: 'price';
+  /** Cabin class (1=economy, 2=premium-economy, 3=business, 4=first) */
+  seat_class?: number;
+  /** Number of adult passengers (1–9) */
+  adults?: number;
 }
 
 /**

@@ -25,6 +25,17 @@ const DEFAULT_PRICE_ONEWAY = 100;
 const DEFAULT_PRICE_ROUNDTRIP = 200;
 
 /**
+ * Maps seat class string values to numeric values for the API request.
+ * Validates: Requirements 5.1, 6.4
+ */
+const SEAT_CLASS_MAP: Record<string, number> = {
+  'economy': 1,
+  'premium-economy': 2,
+  'business': 3,
+  'first': 4,
+};
+
+/**
  * Interface for the search service.
  * Provides flight search functionality with parameter transformation.
  */
@@ -99,6 +110,18 @@ export function transformToKiwiRequest(
     // Use specified return window or defaults (2-7 days)
     request.nights_in_dst_from = params.returnDaysMin ?? DEFAULT_RETURN_DAYS_MIN;
     request.nights_in_dst_to = params.returnDaysMax ?? DEFAULT_RETURN_DAYS_MAX;
+  }
+
+  // Set seat_class if specified
+  // Validates: Requirement 5.1
+  if (params.seatClass) {
+    request.seat_class = SEAT_CLASS_MAP[params.seatClass];
+  }
+
+  // Set adults if specified
+  // Validates: Requirement 6.1
+  if (params.adults !== undefined) {
+    request.adults = params.adults;
   }
 
   return request;
@@ -331,6 +354,72 @@ export function filterByAirlines(flights: FlightResult[], airlineCodes: string[]
 }
 
 /**
+ * Filters flight results to only include flights within a departure time window.
+ * Compares departureTime (HH:mm format) lexicographically against the time bounds.
+ * This works correctly for HH:mm format strings.
+ *
+ * Validates: Requirements 7.1, 7.2, 7.3
+ * - WHEN `--departure-after` is provided, exclude flights departing before that time
+ * - WHEN `--departure-before` is provided, exclude flights departing after that time
+ * - WHEN both are provided, include only flights within the window (inclusive)
+ *
+ * @param flights - Array of flight results to filter
+ * @param departureAfter - Minimum departure time in HH:mm format (inclusive), optional
+ * @param departureBefore - Maximum departure time in HH:mm format (inclusive), optional
+ * @returns Array of flights within the specified departure time window
+ */
+export function filterByDepartureTime(
+  flights: FlightResult[],
+  departureAfter?: string,
+  departureBefore?: string
+): FlightResult[] {
+  // If neither bound is specified, return all flights unchanged
+  if (!departureAfter && !departureBefore) {
+    return flights;
+  }
+
+  return flights.filter((flight) => {
+    const time = flight.departureTime;
+    if (departureAfter && time < departureAfter) {
+      return false;
+    }
+    if (departureBefore && time > departureBefore) {
+      return false;
+    }
+    return true;
+  });
+}
+
+/**
+ * Filters flight results to exclude flights exceeding a maximum duration.
+ * Compares the durationMinutes field against the provided max duration.
+ *
+ * Validates: Requirements 8.1, 8.2
+ * - WHEN `--max-duration` is provided, exclude flights with duration > maxDuration
+ *
+ * @param flights - Array of flight results to filter
+ * @param maxDuration - Maximum allowed duration in minutes (inclusive)
+ * @returns Array of flights with duration <= maxDuration
+ */
+export function filterByMaxDuration(flights: FlightResult[], maxDuration: number): FlightResult[] {
+  return flights.filter((flight) => flight.durationMinutes <= maxDuration);
+}
+
+/**
+ * Filters flight results to exclude basic economy fares.
+ * Removes flights where isBasicEconomy is true.
+ *
+ * Validates: Requirements 9.1, 9.2
+ * - WHEN `--exclude-basic-economy` is provided, exclude flights tagged as basic economy
+ *
+ * @param flights - Array of flight results to filter
+ * @returns Array of flights where isBasicEconomy is not true
+ */
+export function filterByBasicEconomy(flights: FlightResult[]): FlightResult[] {
+  return flights.filter((flight) => !flight.isBasicEconomy);
+}
+
+/**
  * Sorts flight results by price ascending (cheapest first).
  * Creates a new array to avoid mutating the input.
  *
@@ -438,6 +527,24 @@ export class SearchService implements ISearchService {
     // Validates: Requirement 5.2
     if (params.airlineFilter && params.airlineFilter.length > 0) {
       flightResults = filterByAirlines(flightResults, params.airlineFilter);
+    }
+
+    // Apply departure time window filter
+    // Validates: Requirements 7.1, 7.2, 7.3
+    if (params.departureAfter || params.departureBefore) {
+      flightResults = filterByDepartureTime(flightResults, params.departureAfter, params.departureBefore);
+    }
+
+    // Apply max duration filter
+    // Validates: Requirement 8.1
+    if (params.maxDuration !== undefined) {
+      flightResults = filterByMaxDuration(flightResults, params.maxDuration);
+    }
+
+    // Apply basic economy exclusion filter
+    // Validates: Requirement 9.1
+    if (params.excludeBasicEconomy) {
+      flightResults = filterByBasicEconomy(flightResults);
     }
 
     // Sort results by price ascending (cheapest first)

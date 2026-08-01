@@ -1,130 +1,89 @@
 /**
  * Unit tests for configuration module.
- * Tests API key loading, error handling, and default values.
+ * Tests that config loads without API key requirements and returns correct defaults.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { loadConfig, getDefaultConfig } from '../../src/config.js';
-import { ConfigError } from '../../src/errors.js';
 
 describe('config', () => {
-  const originalKiwiKey = process.env.KIWI_API_KEY;
-  const originalRapidKey = process.env.RAPIDAPI_KEY;
-
-  beforeEach(() => {
-    // Clear both environment variables before each test
-    delete process.env.KIWI_API_KEY;
-    delete process.env.RAPIDAPI_KEY;
-  });
-
-  afterEach(() => {
-    // Restore original environment variables
-    if (originalKiwiKey !== undefined) {
-      process.env.KIWI_API_KEY = originalKiwiKey;
-    } else {
-      delete process.env.KIWI_API_KEY;
-    }
-    if (originalRapidKey !== undefined) {
-      process.env.RAPIDAPI_KEY = originalRapidKey;
-    } else {
-      delete process.env.RAPIDAPI_KEY;
-    }
-  });
-
   describe('loadConfig', () => {
-    it('should throw ConfigError when RAPIDAPI_KEY is not set', () => {
-      expect(() => loadConfig()).toThrow(ConfigError);
-    });
-
-    it('should include helpful error message when API key is missing', () => {
-      try {
-        loadConfig();
-        expect.fail('Expected ConfigError to be thrown');
-      } catch (error) {
-        expect(error).toBeInstanceOf(ConfigError);
-        expect((error as ConfigError).message).toContain('RAPIDAPI_KEY environment variable not set');
-        expect((error as ConfigError).message).toContain('https://rapidapi.com');
-        expect((error as ConfigError).message).toContain('export RAPIDAPI_KEY');
-      }
-    });
-
-    it('should have exit code 1 for ConfigError', () => {
-      try {
-        loadConfig();
-        expect.fail('Expected ConfigError to be thrown');
-      } catch (error) {
-        expect((error as ConfigError).exitCode).toBe(1);
-      }
-    });
-
-    it('should load config from RAPIDAPI_KEY environment variable', () => {
-      process.env.RAPIDAPI_KEY = 'test-rapid-api-key-123';
-      
+    it('should return config without requiring any environment variables', () => {
       const config = loadConfig();
-      
-      expect(config.kiwiApiKey).toBe('test-rapid-api-key-123');
+      expect(config).toBeDefined();
     });
 
-    it('should fall back to KIWI_API_KEY when RAPIDAPI_KEY is not set', () => {
-      process.env.KIWI_API_KEY = 'test-kiwi-key-456';
-      
+    it('should not throw when no API key is set', () => {
+      expect(() => loadConfig()).not.toThrow();
+    });
+
+    it('should accept no arguments', () => {
       const config = loadConfig();
-      
-      expect(config.kiwiApiKey).toBe('test-kiwi-key-456');
+      expect(config.googleFlightsBaseUrl).toBe('https://www.google.com/travel/flights');
     });
 
-    it('should prefer RAPIDAPI_KEY over KIWI_API_KEY', () => {
-      process.env.RAPIDAPI_KEY = 'rapid-key';
-      process.env.KIWI_API_KEY = 'kiwi-key';
-      
+    it('should include Google Flights base URL', () => {
       const config = loadConfig();
-      
-      expect(config.kiwiApiKey).toBe('rapid-key');
+      expect(config.googleFlightsBaseUrl).toBe('https://www.google.com/travel/flights');
     });
 
-    it('should use apiKeyOverride when provided', () => {
-      process.env.RAPIDAPI_KEY = 'env-api-key';
-      
-      const config = loadConfig('override-api-key');
-      
-      expect(config.kiwiApiKey).toBe('override-api-key');
-    });
-
-    it('should use apiKeyOverride even when env var is not set', () => {
-      const config = loadConfig('override-api-key');
-      
-      expect(config.kiwiApiKey).toBe('override-api-key');
-    });
-
-    it('should include default configuration values', () => {
-      const config = loadConfig('test-key');
-      
-      expect(config.kiwiBaseUrl).toBe('https://flight-scanner10.p.rapidapi.com');
+    it('should include default pricing configuration', () => {
+      const config = loadConfig();
       expect(config.defaultMaxPriceOneway).toBe(100);
       expect(config.defaultMaxPriceRoundtrip).toBe(200);
+    });
+
+    it('should include default date range and return days', () => {
+      const config = loadConfig();
       expect(config.defaultDateRangeDays).toBe(30);
       expect(config.defaultReturnDaysMin).toBe(2);
       expect(config.defaultReturnDaysMax).toBe(7);
+    });
+
+    it('should include default limit', () => {
+      const config = loadConfig();
       expect(config.defaultLimit).toBe(20);
+    });
+
+    it('should include request timeout', () => {
+      const config = loadConfig();
       expect(config.requestTimeoutMs).toBe(30000);
+    });
+
+    it('should not have rapidApiKey field', () => {
+      const config = loadConfig();
+      expect(config).not.toHaveProperty('rapidApiKey');
+    });
+
+    it('should not have kiwiApiKey field', () => {
+      const config = loadConfig();
+      expect(config).not.toHaveProperty('kiwiApiKey');
+    });
+
+    it('should not have kiwiBaseUrl field', () => {
+      const config = loadConfig();
+      expect(config).not.toHaveProperty('kiwiBaseUrl');
     });
   });
 
   describe('getDefaultConfig', () => {
-    it('should return default config without API key', () => {
+    it('should return the same defaults as loadConfig', () => {
       const defaults = getDefaultConfig();
-      
-      expect(defaults).not.toHaveProperty('kiwiApiKey');
-      expect(defaults.defaultMaxPriceOneway).toBe(100);
-      expect(defaults.defaultMaxPriceRoundtrip).toBe(200);
+      const config = loadConfig();
+      expect(defaults).toEqual(config);
     });
 
     it('should return a copy of defaults (not same reference)', () => {
       const defaults1 = getDefaultConfig();
       const defaults2 = getDefaultConfig();
-      
       expect(defaults1).not.toBe(defaults2);
       expect(defaults1).toEqual(defaults2);
+    });
+
+    it('should not have any API key fields', () => {
+      const defaults = getDefaultConfig();
+      expect(defaults).not.toHaveProperty('rapidApiKey');
+      expect(defaults).not.toHaveProperty('kiwiApiKey');
+      expect(defaults).not.toHaveProperty('kiwiBaseUrl');
     });
   });
 });
