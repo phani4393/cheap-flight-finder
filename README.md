@@ -38,34 +38,39 @@ npm link
 
 ## Quick Start
 
-No API key needed with the default Google Flights backend:
+The default backend (RapidAPI) is reliable and needs a free API key:
 
 ```bash
+# Get your free key at https://rapidapi.com/apiheya/api/flight-scanner10
+export RAPIDAPI_KEY="your-key-here"
 cheap-flights --from ORD --nonstop --limit 5
 ```
 
-If Google blocks the request (CAPTCHA), switch to RapidAPI:
+Or try the experimental Google Flights backend (no key needed, may get blocked):
 
 ```bash
-cheap-flights --backend rapidapi --api-key YOUR_KEY --from ORD --limit 5
+cheap-flights --backend google --from ORD --nonstop --limit 5
 ```
+
+If Google blocks the request and you have `RAPIDAPI_KEY` set, it auto-falls back to RapidAPI.
 
 ## Backends
 
-### Google Flights (default)
+### RapidAPI Flight Scanner (default)
 
-- No API key required
-- Scrapes Google Flights directly using Protobuf-encoded URL parameters
-- May occasionally get blocked by Google's bot detection (CAPTCHA)
-- Wait a few minutes and retry, or switch to RapidAPI
-
-### RapidAPI Flight Scanner
-
-- Requires a free RapidAPI key
-- Reliable, no blocking issues
+- Reliable, consistent results
+- Requires a free RapidAPI key (instant signup, no payment needed)
 - Sign up at https://rapidapi.com
 - Subscribe to "Flight Scanner" API (Basic plan, $0/month): https://rapidapi.com/apiheya/api/flight-scanner10
-- Set your key via `--api-key` flag or `RAPIDAPI_KEY` environment variable
+- Set your key via `RAPIDAPI_KEY` env var or `--api-key` flag
+
+### Google Flights (experimental)
+
+- No API key required — completely free
+- Scrapes Google Flights directly using Protobuf-encoded URL parameters
+- May get blocked by Google's bot detection (CAPTCHA)
+- If blocked and `RAPIDAPI_KEY` is set, auto-falls back to RapidAPI
+- Use `--backend google` to opt in
 
 ## Configuration
 
@@ -112,7 +117,7 @@ cheap-flights [OPTIONS]
 | `--show-links` | Display booking URLs in output | off |
 | `--open <N>` | Open result N's booking URL in browser | — |
 | `--export <FILE>` | Export results to CSV file | — |
-| `--backend <TYPE>` | Backend: google or rapidapi | google |
+| `--backend <TYPE>` | Backend: rapidapi (default) or google (experimental) | rapidapi |
 | `--api-key <KEY>` | RapidAPI key (for rapidapi backend) | — |
 | `-h, --help` | Show help text | — |
 | `-v, --version` | Show version number | — |

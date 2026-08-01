@@ -10,7 +10,7 @@
 import { Command } from 'commander';
 import { addDays, parse, differenceInDays, startOfDay } from 'date-fns';
 import { loadConfig } from './config.js';
-import { ValidationError, AppError } from './errors.js';
+import { ValidationError, AppError, ApiError } from './errors.js';
 import { GoogleFlightsAdapter } from './adapters/google-flights/index.js';
 import { SkyscannerAdapter } from './adapters/skyscanner.js';
 import { SearchService } from './services/search.js';
@@ -271,8 +271,8 @@ export function parseArgs(): CLIOptions {
     )
     .option(
       '--backend <TYPE>',
-      'Backend: google (free, may get blocked) or rapidapi (needs RAPIDAPI_KEY)',
-      'google'
+      'Backend: rapidapi (default, needs RAPIDAPI_KEY) or google (free, experimental)',
+      'rapidapi'
     )
     .option(
       '--api-key <KEY>',
@@ -661,7 +661,9 @@ export async function main(): Promise<void> {
     if (!apiKey) {
       throw new ValidationError(
         'RapidAPI key required when using --backend rapidapi.\n' +
-        'Set RAPIDAPI_KEY env var or pass --api-key YOUR_KEY'
+        'Get a free key at https://rapidapi.com/apiheya/api/sky-scrapper\n' +
+        'Then set RAPIDAPI_KEY env var or pass --api-key YOUR_KEY.\n' +
+        'Alternatively, try --backend google (free, experimental, may get blocked).'
       );
     }
     flightAdapter = new SkyscannerAdapter(apiKey, retryHandler);
@@ -671,8 +673,30 @@ export async function main(): Promise<void> {
   
   const searchService = new SearchService(flightAdapter);
   
-  // Execute the search
-  const searchResult = await searchService.search(searchParams);
+  // Execute the search (with auto-fallback for Google backend)
+  let searchResult;
+  try {
+    searchResult = await searchService.search(searchParams);
+  } catch (error) {
+    // Auto-fallback: if Google backend is blocked/CAPTCHA'd and RapidAPI key is available
+    if (
+      options.backend === 'google' &&
+      error instanceof ApiError &&
+      (error.message.toLowerCase().includes('blocked') || error.message.toLowerCase().includes('captcha'))
+    ) {
+      const rapidApiKey = process.env.RAPIDAPI_KEY;
+      if (rapidApiKey) {
+        process.stderr.write('Google Flights blocked. Falling back to RapidAPI...\n');
+        const fallbackAdapter = new SkyscannerAdapter(rapidApiKey, retryHandler);
+        const fallbackService = new SearchService(fallbackAdapter);
+        searchResult = await fallbackService.search(searchParams);
+      } else {
+        throw error;
+      }
+    } else {
+      throw error;
+    }
+  }
   const flights = searchResult.flights;
   
   // Display results or no-results message

@@ -75,7 +75,7 @@ const DEFAULT_RETURN_DAYS_MAX = 7;
  * @param origin - The specific origin airport for this request
  * @returns KiwiSearchRequest formatted for the API
  */
-export function transformToKiwiRequest(
+export function transformToSearchRequest(
   params: SearchParams,
   origin: string
 ): KiwiSearchRequest {
@@ -89,8 +89,8 @@ export function transformToKiwiRequest(
   const request: KiwiSearchRequest = {
     fly_from: origin,
     fly_to: params.destination, // 'US' for all destinations or specific IATA code
-    date_from: formatDateForKiwi(params.dateFrom),
-    date_to: formatDateForKiwi(params.dateTo),
+    date_from: formatDateForApi(params.dateFrom),
+    date_to: formatDateForApi(params.dateTo),
     flight_type: params.tripType,
     price_to: priceTo,
     curr: 'USD',
@@ -133,7 +133,7 @@ export function transformToKiwiRequest(
  * @param date - Date to format
  * @returns Date string in YYYY-MM-DD format
  */
-export function formatDateForKiwi(date: Date): string {
+export function formatDateForApi(date: Date): string {
   return format(date, 'yyyy-MM-dd');
 }
 
@@ -157,7 +157,7 @@ export function formatDateForKiwi(date: Date): string {
  * @param kiwiFlights - Array of flights from Kiwi API
  * @returns Array of transformed FlightResult objects
  */
-export function transformKiwiFlights(kiwiFlights: KiwiFlight[]): FlightResult[] {
+export function transformApiFlights(kiwiFlights: KiwiFlight[]): FlightResult[] {
   return kiwiFlights.map((kiwiFlight) => transformSingleFlight(kiwiFlight));
 }
 
@@ -492,7 +492,7 @@ export class SearchService implements ISearchService {
 
     // Make parallel API calls for all origins using Promise.all()
     const searchPromises = params.origins.map((origin) => {
-      const request = transformToKiwiRequest(params, origin);
+      const request = transformToSearchRequest(params, origin);
       return this.kiwiAdapter.searchFlights(request).then((flights) => ({
         origin,
         flights,
@@ -515,7 +515,7 @@ export class SearchService implements ISearchService {
     const uniqueKiwiFlights = this.removeDuplicates(allKiwiFlights);
 
     // Transform KiwiFlight[] to FlightResult[]
-    let flightResults = transformKiwiFlights(uniqueKiwiFlights);
+    let flightResults = transformApiFlights(uniqueKiwiFlights);
 
     // Apply client-side price filtering
     // Validates: Requirement 5.3
@@ -584,3 +584,18 @@ export class SearchService implements ISearchService {
     return uniqueFlights;
   }
 }
+
+/**
+ * @deprecated Use transformToSearchRequest instead
+ */
+export const transformToKiwiRequest = transformToSearchRequest;
+
+/**
+ * @deprecated Use formatDateForApi instead
+ */
+export const formatDateForKiwi = formatDateForApi;
+
+/**
+ * @deprecated Use transformApiFlights instead
+ */
+export const transformKiwiFlights = transformApiFlights;

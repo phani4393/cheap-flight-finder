@@ -49,9 +49,9 @@ describe('config', () => {
       expect(config.requestTimeoutMs).toBe(30000);
     });
 
-    it('should not have rapidApiKey field', () => {
+    it('should have rapidApiKey field (may be undefined)', () => {
       const config = loadConfig();
-      expect(config).not.toHaveProperty('rapidApiKey');
+      expect(config).toHaveProperty('rapidApiKey');
     });
 
     it('should not have kiwiApiKey field', () => {
@@ -66,10 +66,14 @@ describe('config', () => {
   });
 
   describe('getDefaultConfig', () => {
-    it('should return the same defaults as loadConfig', () => {
+    it('should return config defaults without rapidApiKey', () => {
       const defaults = getDefaultConfig();
       const config = loadConfig();
-      expect(defaults).toEqual(config);
+      // getDefaultConfig returns base defaults; loadConfig adds rapidApiKey from env
+      expect(defaults.defaultMaxPriceOneway).toEqual(config.defaultMaxPriceOneway);
+      expect(defaults.defaultMaxPriceRoundtrip).toEqual(config.defaultMaxPriceRoundtrip);
+      expect(defaults.defaultLimit).toEqual(config.defaultLimit);
+      expect(defaults.googleFlightsBaseUrl).toEqual(config.googleFlightsBaseUrl);
     });
 
     it('should return a copy of defaults (not same reference)', () => {
@@ -79,9 +83,13 @@ describe('config', () => {
       expect(defaults1).toEqual(defaults2);
     });
 
-    it('should not have any API key fields', () => {
+    it('should not have rapidApiKey field', () => {
       const defaults = getDefaultConfig();
       expect(defaults).not.toHaveProperty('rapidApiKey');
+    });
+
+    it('should not have any legacy API key fields', () => {
+      const defaults = getDefaultConfig();
       expect(defaults).not.toHaveProperty('kiwiApiKey');
       expect(defaults).not.toHaveProperty('kiwiBaseUrl');
     });

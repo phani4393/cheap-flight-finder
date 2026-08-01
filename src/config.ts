@@ -32,6 +32,9 @@ export interface AppConfig {
 
   /** HTTP request timeout in milliseconds */
   requestTimeoutMs: number;
+
+  /** RapidAPI key (optional, loaded from RAPIDAPI_KEY env var) */
+  rapidApiKey?: string;
 }
 
 /**
@@ -57,7 +60,10 @@ const DEFAULT_CONFIG: AppConfig = {
  * **Validates: Requirements 10.1, 10.2, 10.3, 10.5**
  */
 export function loadConfig(): AppConfig {
-  return { ...DEFAULT_CONFIG };
+  return {
+    ...DEFAULT_CONFIG,
+    rapidApiKey: process.env.RAPIDAPI_KEY,  // may be undefined
+  };
 }
 
 /**
