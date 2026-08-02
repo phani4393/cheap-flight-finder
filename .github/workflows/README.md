@@ -2,7 +2,7 @@
 
 ## What This Pipeline Does
 
-This GitHub Actions workflow automatically searches for cheap nonstop flights from Chicago airports to all US destinations, saves results, and sends Telegram alerts when deals are found.
+Automatically searches for cheap flights from Chicago (ORD + MDW) using 3 search profiles, detects price drops, scores deals, and sends a comprehensive Telegram report 3x daily.
 
 ## Schedule
 
@@ -13,85 +13,139 @@ Runs **3 times daily** (Chicago time):
 
 Can also be triggered manually from the GitHub Actions tab.
 
-## Search Criteria
+## Search Profiles
+
+### Profile A: 👨‍👩‍👧 Family Round-Trip (primary)
 
 | Parameter | Value |
 |-----------|-------|
-| **Origin airports** | ORD (O'Hare) AND MDW (Midway) — searches both |
-| **Destinations** | All US airports |
-| **Date range** | Tomorrow through 30 days from today |
-| **Trip type** | One-way |
-| **Max price** | $100 (default for one-way) |
-| **Stops** | Nonstop only |
-| **Results limit** | Top 20 cheapest |
-| **Backend** | RapidAPI Flight Scanner |
+| Origin | ORD + MDW (both) |
+| Destinations | All US airports |
+| Trip type | Round-trip |
+| Return window | 3-4 days |
+| Max price | $200 per person |
+| Passengers | 2 adults |
+| Stops | Any (for better deals) |
+| Date range | Next 30 days |
+| Results | Top 15 cheapest |
 
-## What Gets Notified to Telegram
+### Profile B: 🏖️ Weekend Getaway
 
-A Telegram message is sent when **any flights are found** under the $100 threshold. The message includes:
+| Parameter | Value |
+|-----------|-------|
+| Origin | ORD + MDW (both) |
+| Destinations | All US airports |
+| Trip type | Round-trip |
+| Return window | 2-3 days |
+| Max price | $150 per person |
+| Passengers | 2 adults |
+| Stops | Nonstop only |
+| Date range | Next 2 Fridays |
+| Results | Top 10 cheapest |
 
-- Total number of flights found
-- Top 5 cheapest deals with: price, route (e.g., ORD→LAX), date, departure time, airline
-- Link to the full results in GitHub Actions
+### Profile C: 💸 Ultra-Cheap One-Way
 
-If no flights are found under $100, a "no flights found" message is sent instead.
+| Parameter | Value |
+|-----------|-------|
+| Origin | ORD + MDW (both) |
+| Destinations | All US airports |
+| Trip type | One-way |
+| Max price | $60 |
+| Passengers | 1 adult |
+| Stops | Nonstop only |
+| Date range | Next 30 days |
+| Results | Top 10 cheapest |
 
-## Pipeline Steps
+## Deal Scoring
 
-1. **Checkout** — pulls latest code from the repo
-2. **Setup Node.js** — installs Node.js 20
-3. **Install dependencies** — runs `npm ci`
-4. **Build** — compiles TypeScript (`npm run build`)
-5. **Search flights** — runs the CLI with RapidAPI backend:
-   ```
-   node dist/cli.js --backend rapidapi --from BOTH --nonstop --limit 20 --export results/flights_DATE_TIME.csv
-   ```
-6. **Display results summary** — writes output to the GitHub Actions summary page
-7. **Commit results** — saves the CSV to the `results/` folder in the repo (builds price history)
-8. **Send Telegram notification** — sends top deals to your Telegram
+Each deal gets a fire rating based on price:
+
+| Score | Family Trip | Weekend |
+|-------|-------------|---------|
+| 🔥🔥🔥 | ≤ $100 | ≤ $80 |
+| 🔥🔥 | ≤ $150 | ≤ $120 |
+| 🔥 | ≤ $200 | ≤ $150 |
+
+## Price Drop Detection
+
+Compares today's family search results against yesterday's data. If a route dropped **20% or more**, it's flagged:
+
+```
+🚨 PRICE DROPS DETECTED!
+📉 ORD→FLL: $180→$120 (-33%)
+📉 MDW→DEN: $150→$95 (-37%)
+```
+
+## Telegram Notification Format
+
+```
+✈️ Flight Deals Report
+━━━━━━━━━━━━━━━━━━
+
+🚨 PRICE DROPS DETECTED!
+📉 ORD→FLL: $180→$120 (-33%)
+
+👨‍👩‍👧 Family Trips (3-4 days, round-trip)
+🔥🔥🔥 $89 ORD→FLL 2026-08-15 (Spirit)
+🔥🔥 $120 MDW→DEN 2026-08-18 (Southwest)
+🔥 $175 ORD→LAX 2026-08-20 (United)
+
+🏖️ Weekend Getaways (nonstop)
+🔥🔥🔥 $75 ORD→MCO 2026-08-22 (Frontier)
+🔥🔥 $110 MDW→LAS 2026-08-29 (Spirit)
+
+💸 Ultra-Cheap (under $60, one-way)
+🔥🔥🔥 $39 MDW→FLL 2026-08-16 (Spirit)
+🔥🔥🔥 $47 ORD→MCO 2026-08-19 (Frontier)
+
+🔗 Full results
+```
 
 ## Required GitHub Secrets
 
 | Secret | Required | Description |
 |--------|----------|-------------|
-| `RAPIDAPI_KEY` | ✅ Yes | Free API key from [RapidAPI Flight Scanner](https://rapidapi.com/apiheya/api/flight-scanner10) |
+| `RAPIDAPI_KEY` | ✅ Yes | Free key from [RapidAPI Flight Scanner](https://rapidapi.com/apiheya/api/flight-scanner10) |
 | `TELEGRAM_BOT_TOKEN` | ✅ Yes | Bot token from [@BotFather](https://t.me/BotFather) |
 | `TELEGRAM_CHAT_ID` | ✅ Yes | Your chat ID from [@userinfobot](https://t.me/userinfobot) |
 
 ## Output Files
 
-Results are saved as CSV files in the `results/` directory:
-
 ```
 results/
-├── flights_2026-08-01_1100.csv
-├── flights_2026-08-01_1700.csv
-├── flights_2026-08-01_2300.csv
-├── flights_2026-08-02_1100.csv
+├── family_2026-08-01_1100.csv     # Family round-trip results
+├── weekend_2026-08-01_1100.csv    # Weekend getaway results
+├── budget_2026-08-01_1100.csv     # Ultra-cheap one-way results
 └── ...
 ```
 
-Each CSV contains columns: price, origin, destination, departure_date, departure_time, arrival_time, airline, duration_minutes, stops, booking_url
-
 ## Cost
 
-- **GitHub Actions**: Free (uses ~1.5 min/run × 3 runs/day = ~135 min/month of the 2,000 free minutes)
-- **RapidAPI**: Free tier (Basic plan, $0/month)
-- **Telegram Bot API**: Free
-
-**Total cost: $0/month**
+**$0/month total:**
+- GitHub Actions: ~3 min/run × 3 runs/day = ~270 min/month (of 2,000 free)
+- RapidAPI Flight Scanner: Free tier (Basic plan)
+- Telegram Bot API: Free
 
 ## Customization
 
-To change the search criteria, edit `.github/workflows/flight-search.yml` and modify the `node dist/cli.js` command. Available options:
+Edit the CLI commands in `.github/workflows/flight-search.yml`:
 
-```
---from ORD              # Search only O'Hare (default: BOTH)
---max-price 75          # Lower the price threshold
---round-trip            # Search round-trip instead of one-way
---return-days 3-5       # Return window for round-trips
---destination LAX       # Search specific destination
---airline UA,AA         # Filter by airline
---departure-after 08:00 # Only morning+ flights
---seat business         # Business class deals
+```bash
+# Change return window to 5-7 days
+--return-days 5-7
+
+# Lower budget
+--max-price 150
+
+# Only O'Hare
+--from ORD
+
+# Specific destination
+--destination LAX
+
+# Add airline filter
+--airline UA,AA,WN
+
+# Morning flights only
+--departure-after 06:00 --departure-before 12:00
 ```
