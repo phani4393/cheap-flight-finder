@@ -140,7 +140,7 @@ jobs:
         id: pricedrops
         if: steps.family.outputs.status == 'success'
         run: |
-          node scripts/detect-price-drops.js \
+          node scripts/detect-price-drops.cjs \
             --current "${{ steps.family.outputs.filename }}" \
             --profile family \
             --output price_drops.txt
@@ -168,7 +168,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          MESSAGE=$(node scripts/format-telegram.js \
+          MESSAGE=$(node scripts/format-telegram.cjs \
             --family "${{ steps.family.outputs.filename }}" \
             --weekend "${{ steps.weekend.outputs.filename }}" \
             --budget "${{ steps.budget.outputs.filename }}" \
