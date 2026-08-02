@@ -1,0 +1,113 @@
+name: Cheap Flight Search
+
+on:
+  schedule:
+    # Run 3x daily: 6am, 12pm, 6pm CT (UTC-5 → 11:00, 17:00, 23:00 UTC)
+    - cron: '0 11 * * *'
+    - cron: '0 17 * * *'
+    - cron: '0 23 * * *'
+  workflow_dispatch:  # Allow manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  search-flights:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Create results directory
+        run: mkdir -p results
+
+      - name: Search flights (Google backend - free)
+        id: search
+        continue-on-error: true
+        run: |
+          DATE=$(date +%Y-%m-%d)
+          TIME=$(date +%H%M)
+          FILENAME="results/flights_${DATE}_${TIME}.csv"
+          
+          # Try Google backend first (free, no key needed)
+          node dist/cli.js \
+            --backend google \
+            --from BOTH \
+            --nonstop \
+            --limit 20 \
+            --export "$FILENAME" 2>&1 | tee search_output.txt
+          
+          if [ -f "$FILENAME" ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "filename=$FILENAME" >> $GITHUB_OUTPUT
+            FLIGHT_COUNT=$(wc -l < "$FILENAME")
+            FLIGHT_COUNT=$((FLIGHT_COUNT - 1))  # subtract header row
+            echo "count=$FLIGHT_COUNT" >> $GITHUB_OUTPUT
+          else
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "count=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Fallback to RapidAPI (if Google blocked)
+        if: steps.search.outputs.status != 'success' && env.RAPIDAPI_KEY != ''
+        id: fallback
+        env:
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+        run: |
+          DATE=$(date +%Y-%m-%d)
+          TIME=$(date +%H%M)
+          FILENAME="results/flights_${DATE}_${TIME}.csv"
+          
+          node dist/cli.js \
+            --backend rapidapi \
+            --from BOTH \
+            --nonstop \
+            --limit 20 \
+            --export "$FILENAME" 2>&1 | tee search_output.txt
+          
+          if [ -f "$FILENAME" ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "filename=$FILENAME" >> $GITHUB_OUTPUT
+            FLIGHT_COUNT=$(wc -l < "$FILENAME")
+            FLIGHT_COUNT=$((FLIGHT_COUNT - 1))
+            echo "count=$FLIGHT_COUNT" >> $GITHUB_OUTPUT
+          else
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "count=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Display results summary
+        if: always()
+        run: |
+          echo "## ✈️ Flight Search Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f search_output.txt ]; then
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat search_output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No results found or search failed." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Commit results
+        if: steps.search.outputs.status == 'success' || steps.fallback.outputs.status == 'success'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add results/
+          git diff --cached --quiet || git commit -m "data: flight search results $(date +%Y-%m-%d %H:%M)"
+          git push
