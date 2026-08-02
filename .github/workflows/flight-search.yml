@@ -34,36 +34,9 @@ jobs:
       - name: Create results directory
         run: mkdir -p results
 
-      - name: Search flights (Google backend - free)
+      - name: Search flights (RapidAPI backend)
         id: search
         continue-on-error: true
-        run: |
-          DATE=$(date +%Y-%m-%d)
-          TIME=$(date +%H%M)
-          FILENAME="results/flights_${DATE}_${TIME}.csv"
-          
-          # Try Google backend first (free, no key needed)
-          node dist/cli.js \
-            --backend google \
-            --from BOTH \
-            --nonstop \
-            --limit 20 \
-            --export "$FILENAME" 2>&1 | tee search_output.txt
-          
-          if [ -f "$FILENAME" ]; then
-            echo "status=success" >> $GITHUB_OUTPUT
-            echo "filename=$FILENAME" >> $GITHUB_OUTPUT
-            FLIGHT_COUNT=$(wc -l < "$FILENAME")
-            FLIGHT_COUNT=$((FLIGHT_COUNT - 1))  # subtract header row
-            echo "count=$FLIGHT_COUNT" >> $GITHUB_OUTPUT
-          else
-            echo "status=failed" >> $GITHUB_OUTPUT
-            echo "count=0" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Fallback to RapidAPI (if Google blocked)
-        if: steps.search.outputs.status != 'success' && env.RAPIDAPI_KEY != ''
-        id: fallback
         env:
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
         run: |
@@ -82,7 +55,7 @@ jobs:
             echo "status=success" >> $GITHUB_OUTPUT
             echo "filename=$FILENAME" >> $GITHUB_OUTPUT
             FLIGHT_COUNT=$(wc -l < "$FILENAME")
-            FLIGHT_COUNT=$((FLIGHT_COUNT - 1))
+            FLIGHT_COUNT=$((FLIGHT_COUNT - 1))  # subtract header row
             echo "count=$FLIGHT_COUNT" >> $GITHUB_OUTPUT
           else
             echo "status=failed" >> $GITHUB_OUTPUT
@@ -104,7 +77,7 @@ jobs:
           fi
 
       - name: Commit results
-        if: steps.search.outputs.status == 'success' || steps.fallback.outputs.status == 'success'
+        if: steps.search.outputs.status == 'success'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -113,13 +86,13 @@ jobs:
           git push
 
       - name: Send Telegram notification
-        if: (steps.search.outputs.status == 'success' || steps.fallback.outputs.status == 'success') && env.TELEGRAM_BOT_TOKEN != ''
+        if: steps.search.outputs.status == 'success' && env.TELEGRAM_BOT_TOKEN != ''
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           # Build message from search output
-          COUNT="${{ steps.search.outputs.count || steps.fallback.outputs.count }}"
+          COUNT="${{ steps.search.outputs.count }}"
           
           if [ "$COUNT" -gt "0" ] 2>/dev/null; then
             # Extract top 5 cheapest from the output
@@ -127,7 +100,7 @@ jobs:
             MESSAGE+="Found *${COUNT}* flights under budget.%0A%0A"
             
             # Parse CSV for top deals (skip header, show top 5)
-            FILENAME="${{ steps.search.outputs.filename || steps.fallback.outputs.filename }}"
+            FILENAME="${{ steps.search.outputs.filename }}"
             if [ -f "$FILENAME" ]; then
               TOP_DEALS=$(tail -n +2 "$FILENAME" | sort -t',' -k1 -n | head -5 | while IFS=',' read -r price origin dest dep_date dep_time arr_time airline duration stops url; do
                 echo "💰 \$${price} ${origin}→${dest} ${dep_date} ${dep_time} (${airline})"
