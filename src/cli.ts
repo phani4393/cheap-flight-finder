@@ -10,8 +10,7 @@
 import { Command } from 'commander';
 import { addDays, parse, differenceInDays, startOfDay } from 'date-fns';
 import { loadConfig } from './config.js';
-import { ValidationError, AppError, ApiError } from './errors.js';
-import { GoogleFlightsAdapter } from './adapters/google-flights/index.js';
+import { ValidationError, AppError } from './errors.js';
 import { SkyscannerAdapter } from './adapters/skyscanner.js';
 import { SearchService } from './services/search.js';
 import { formatOutput, formatNoResults } from './formatters/table.js';
@@ -92,10 +91,7 @@ export interface CLIOptions {
   /** Exclude basic economy fares */
   excludeBasicEconomy: boolean;
   
-  /** Backend to use: google (free, may get blocked) or rapidapi (needs key, reliable) */
-  backend: 'google' | 'rapidapi';
-  
-  /** RapidAPI key (required when --backend rapidapi) */
+  /** RapidAPI key (or set RAPIDAPI_KEY env var) */
   apiKey?: string;
 }
 
@@ -270,13 +266,8 @@ export function parseArgs(): CLIOptions {
       false
     )
     .option(
-      '--backend <TYPE>',
-      'Backend: rapidapi (default, needs RAPIDAPI_KEY) or google (free, experimental)',
-      'rapidapi'
-    )
-    .option(
       '--api-key <KEY>',
-      'RapidAPI key (required when --backend rapidapi, or set RAPIDAPI_KEY env var)'
+      'RapidAPI key (or set RAPIDAPI_KEY env var)'
     )
     .addHelpText('after', `
 Examples:
@@ -288,7 +279,7 @@ Examples:
   cheap-flights --export deals.csv        # Save to file
   cheap-flights --seat business --adults 2  # Business class, 2 passengers
   cheap-flights --departure-after 08:00 --departure-before 18:00  # Daytime flights
-  cheap-flights --backend rapidapi --api-key YOUR_KEY  # Use RapidAPI (reliable)
+  cheap-flights --api-key YOUR_KEY        # Provide API key directly
 `);
 
   program.parse();
@@ -316,7 +307,6 @@ Examples:
     departureBefore: opts.departureBefore,
     maxDuration: opts.maxDuration,
     excludeBasicEconomy: opts.excludeBasicEconomy,
-    backend: opts.backend as 'google' | 'rapidapi',
     apiKey: opts.apiKey,
   };
 }
@@ -642,7 +632,7 @@ export async function main(): Promise<void> {
   // Validate options (includes seat class, adults, time format, max-duration)
   const validatedDates = validateOptions(options);
   
-  // Load configuration (no API key needed)
+  // Load configuration
   const config = loadConfig();
   
   // Build SearchParams from CLI options
@@ -652,51 +642,24 @@ export async function main(): Promise<void> {
     defaultLimit: config.defaultLimit,
   });
   
-  // Create the search service with the selected backend adapter
+  // Create the search service with RapidAPI adapter (only supported backend)
   const retryHandler = new RetryHandler();
-  let flightAdapter: IFlightAdapter;
-  
-  if (options.backend === 'rapidapi') {
-    const apiKey = options.apiKey ?? process.env.RAPIDAPI_KEY;
-    if (!apiKey) {
-      throw new ValidationError(
-        'RapidAPI key required when using --backend rapidapi.\n' +
-        'Get a free key at https://rapidapi.com/apiheya/api/sky-scrapper\n' +
-        'Then set RAPIDAPI_KEY env var or pass --api-key YOUR_KEY.\n' +
-        'Alternatively, try --backend google (free, experimental, may get blocked).'
-      );
-    }
-    flightAdapter = new SkyscannerAdapter(apiKey, retryHandler);
-  } else {
-    flightAdapter = new GoogleFlightsAdapter(retryHandler);
+
+  const apiKey = options.apiKey ?? config.rapidApiKey;
+  if (!apiKey) {
+    throw new ValidationError(
+      'RAPIDAPI_KEY required. Get a free key:\n' +
+      '1. Sign up at https://rapidapi.com\n' +
+      '2. Subscribe to Flight Scanner (Basic, $0): https://rapidapi.com/apiheya/api/flight-scanner10\n' +
+      '3. Set: export RAPIDAPI_KEY="your-key"  OR  --api-key YOUR_KEY'
+    );
   }
-  
+
+  const flightAdapter: IFlightAdapter = new SkyscannerAdapter(apiKey, retryHandler);
   const searchService = new SearchService(flightAdapter);
   
-  // Execute the search (with auto-fallback for Google backend)
-  let searchResult;
-  try {
-    searchResult = await searchService.search(searchParams);
-  } catch (error) {
-    // Auto-fallback: if Google backend is blocked/CAPTCHA'd and RapidAPI key is available
-    if (
-      options.backend === 'google' &&
-      error instanceof ApiError &&
-      (error.message.toLowerCase().includes('blocked') || error.message.toLowerCase().includes('captcha'))
-    ) {
-      const rapidApiKey = process.env.RAPIDAPI_KEY;
-      if (rapidApiKey) {
-        process.stderr.write('Google Flights blocked. Falling back to RapidAPI...\n');
-        const fallbackAdapter = new SkyscannerAdapter(rapidApiKey, retryHandler);
-        const fallbackService = new SearchService(fallbackAdapter);
-        searchResult = await fallbackService.search(searchParams);
-      } else {
-        throw error;
-      }
-    } else {
-      throw error;
-    }
-  }
+  // Execute the search
+  const searchResult = await searchService.search(searchParams);
   const flights = searchResult.flights;
   
   // Display results or no-results message

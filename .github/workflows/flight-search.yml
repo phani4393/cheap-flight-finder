@@ -35,6 +35,9 @@ jobs:
         run: mkdir -p results
 
       # ===== SEARCH PROFILE A: Family Round-Trip (3-4 days) =====
+      # Note: --adults 2 shows per-person pricing for adults.
+      # Child (under 12) pricing is similar on most US domestic flights.
+      # Total family cost ≈ displayed price × 3 (2 adults + 1 child)
       - name: "Search: Family round-trip (3-4 days, under $200)"
         id: family
         continue-on-error: true
@@ -46,7 +49,6 @@ jobs:
           FILENAME="results/family_${DATE}_${TIME}.csv"
           
           node dist/cli.js \
-            --backend rapidapi \
             --from BOTH \
             --round-trip \
             --return-days 3-4 \
@@ -82,7 +84,6 @@ jobs:
           NEXT_FRI_PLUS2=$(date -d "$NEXT_FRI + 14 days" +%Y-%m-%d 2>/dev/null || date -d "friday + 14 days" +%Y-%m-%d)
           
           node dist/cli.js \
-            --backend rapidapi \
             --from BOTH \
             --round-trip \
             --return-days 2-3 \
@@ -117,7 +118,6 @@ jobs:
           FILENAME="results/budget_${DATE}_${TIME}.csv"
           
           node dist/cli.js \
-            --backend rapidapi \
             --from BOTH \
             --nonstop \
             --max-price 60 \
@@ -140,39 +140,13 @@ jobs:
         id: pricedrops
         if: steps.family.outputs.status == 'success'
         run: |
-          CURRENT_FILE="${{ steps.family.outputs.filename }}"
+          node scripts/detect-price-drops.js \
+            --current "${{ steps.family.outputs.filename }}" \
+            --profile family \
+            --output price_drops.txt
           
-          # Find yesterday's family search file
-          YESTERDAY=$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -d "-1 day" +%Y-%m-%d)
-          PREV_FILE=$(ls results/family_${YESTERDAY}_*.csv 2>/dev/null | head -1)
-          
-          if [ -z "$PREV_FILE" ] || [ ! -f "$PREV_FILE" ]; then
-            echo "drops=none" >> $GITHUB_OUTPUT
-            echo "No previous data to compare."
-            exit 0
-          fi
-          
-          # Compare routes: find routes where price dropped 20%+
-          DROPS=""
-          while IFS=',' read -r price origin dest rest; do
-            # Skip header
-            [ "$price" = "price" ] && continue
-            
-            # Find same route in previous file
-            PREV_PRICE=$(grep ",$origin,$dest," "$PREV_FILE" | head -1 | cut -d',' -f1)
-            
-            if [ -n "$PREV_PRICE" ] && [ "$PREV_PRICE" -gt 0 ] 2>/dev/null; then
-              # Calculate drop percentage
-              DROP_PCT=$(( (PREV_PRICE - price) * 100 / PREV_PRICE ))
-              if [ "$DROP_PCT" -ge 20 ]; then
-                DROPS="${DROPS}📉 ${origin}→${dest}: \$${PREV_PRICE}→\$${price} (-${DROP_PCT}%)%0A"
-              fi
-            fi
-          done < "$CURRENT_FILE"
-          
-          if [ -n "$DROPS" ]; then
+          if [ -s price_drops.txt ]; then
             echo "drops=found" >> $GITHUB_OUTPUT
-            echo "$DROPS" > price_drops.txt
           else
             echo "drops=none" >> $GITHUB_OUTPUT
           fi
@@ -194,82 +168,15 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          MESSAGE=""
+          MESSAGE=$(node scripts/format-telegram.js \
+            --family "${{ steps.family.outputs.filename }}" \
+            --weekend "${{ steps.weekend.outputs.filename }}" \
+            --budget "${{ steps.budget.outputs.filename }}" \
+            --drops "price_drops.txt" \
+            --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}")
           
-          # --- PRICE DROPS (highest priority) ---
-          if [ -f price_drops.txt ]; then
-            DROPS=$(cat price_drops.txt)
-            MESSAGE+="🚨 *PRICE DROPS DETECTED!*%0A${DROPS}%0A"
-          fi
-          
-          # --- FAMILY ROUND-TRIP DEALS ---
-          FAMILY_COUNT="${{ steps.family.outputs.count }}"
-          if [ "$FAMILY_COUNT" -gt "0" ] 2>/dev/null; then
-            MESSAGE+="👨‍👩‍👧 *Family Trips (3-4 days, round-trip)*%0A"
-            
-            FILENAME="${{ steps.family.outputs.filename }}"
-            if [ -f "$FILENAME" ]; then
-              tail -n +2 "$FILENAME" | sort -t',' -k1 -n | head -3 | while IFS=',' read -r price origin dest dep_date dep_time arr_time airline duration stops url; do
-                # Deal score based on price
-                if [ "$price" -le 100 ] 2>/dev/null; then
-                  SCORE="🔥🔥🔥"
-                elif [ "$price" -le 150 ] 2>/dev/null; then
-                  SCORE="🔥🔥"
-                else
-                  SCORE="🔥"
-                fi
-                echo "${SCORE} \$${price} ${origin}→${dest} ${dep_date} (${airline})"
-              done > family_msg.txt
-              MESSAGE+="$(cat family_msg.txt)%0A%0A"
-            fi
-          fi
-          
-          # --- WEEKEND GETAWAY DEALS ---
-          WEEKEND_COUNT="${{ steps.weekend.outputs.count }}"
-          if [ "$WEEKEND_COUNT" -gt "0" ] 2>/dev/null; then
-            MESSAGE+="🏖️ *Weekend Getaways (nonstop)*%0A"
-            
-            FILENAME="${{ steps.weekend.outputs.filename }}"
-            if [ -f "$FILENAME" ]; then
-              tail -n +2 "$FILENAME" | sort -t',' -k1 -n | head -3 | while IFS=',' read -r price origin dest dep_date dep_time arr_time airline duration stops url; do
-                if [ "$price" -le 80 ] 2>/dev/null; then
-                  SCORE="🔥🔥🔥"
-                elif [ "$price" -le 120 ] 2>/dev/null; then
-                  SCORE="🔥🔥"
-                else
-                  SCORE="🔥"
-                fi
-                echo "${SCORE} \$${price} ${origin}→${dest} ${dep_date} (${airline})"
-              done > weekend_msg.txt
-              MESSAGE+="$(cat weekend_msg.txt)%0A%0A"
-            fi
-          fi
-          
-          # --- ULTRA-CHEAP DEALS ---
-          BUDGET_COUNT="${{ steps.budget.outputs.count }}"
-          if [ "$BUDGET_COUNT" -gt "0" ] 2>/dev/null; then
-            MESSAGE+="💸 *Ultra-Cheap (under \$60, one-way)*%0A"
-            
-            FILENAME="${{ steps.budget.outputs.filename }}"
-            if [ -f "$FILENAME" ]; then
-              tail -n +2 "$FILENAME" | sort -t',' -k1 -n | head -3 | while IFS=',' read -r price origin dest dep_date dep_time arr_time airline duration stops url; do
-                echo "🔥🔥🔥 \$${price} ${origin}→${dest} ${dep_date} (${airline})"
-              done > budget_msg.txt
-              MESSAGE+="$(cat budget_msg.txt)%0A%0A"
-            fi
-          fi
-          
-          # --- SUMMARY ---
-          if [ -z "$MESSAGE" ]; then
-            MESSAGE="✈️ No cheap flights found this run. Will check again later."
-          else
-            MESSAGE="✈️ *Flight Deals Report*%0A━━━━━━━━━━━━━━━━━━%0A%0A${MESSAGE}"
-            MESSAGE+="🔗 [Full results](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
-          fi
-          
-          # Send to Telegram
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
             -d parse_mode="Markdown" \
-            -d text="${MESSAGE}" \
+            --data-urlencode "text=${MESSAGE}" \
             -d disable_web_page_preview=true

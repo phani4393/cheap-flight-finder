@@ -1,17 +1,13 @@
 /**
  * Configuration Module
  * Handles loading application configuration.
- * No API key required — uses direct Google Flights scraping.
  */
 
 /**
  * Application configuration interface.
- * Contains default values for search parameters and the Google Flights base URL.
+ * Contains default values for search parameters.
  */
 export interface AppConfig {
-  /** Base URL for Google Flights */
-  googleFlightsBaseUrl: string;
-
   /** Default max price for one-way flights (USD) */
   defaultMaxPriceOneway: number;
 
@@ -33,7 +29,7 @@ export interface AppConfig {
   /** HTTP request timeout in milliseconds */
   requestTimeoutMs: number;
 
-  /** RapidAPI key (optional, loaded from RAPIDAPI_KEY env var) */
+  /** RapidAPI key (loaded from RAPIDAPI_KEY env var) */
   rapidApiKey?: string;
 }
 
@@ -41,7 +37,6 @@ export interface AppConfig {
  * Default configuration values.
  */
 const DEFAULT_CONFIG: AppConfig = {
-  googleFlightsBaseUrl: 'https://www.google.com/travel/flights',
   defaultMaxPriceOneway: 100,
   defaultMaxPriceRoundtrip: 200,
   defaultDateRangeDays: 30,
@@ -53,7 +48,6 @@ const DEFAULT_CONFIG: AppConfig = {
 
 /**
  * Load application configuration.
- * No API key or environment variables required.
  *
  * @returns Complete application configuration
  *

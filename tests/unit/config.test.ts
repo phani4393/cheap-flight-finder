@@ -16,16 +16,6 @@ describe('config', () => {
       expect(() => loadConfig()).not.toThrow();
     });
 
-    it('should accept no arguments', () => {
-      const config = loadConfig();
-      expect(config.googleFlightsBaseUrl).toBe('https://www.google.com/travel/flights');
-    });
-
-    it('should include Google Flights base URL', () => {
-      const config = loadConfig();
-      expect(config.googleFlightsBaseUrl).toBe('https://www.google.com/travel/flights');
-    });
-
     it('should include default pricing configuration', () => {
       const config = loadConfig();
       expect(config.defaultMaxPriceOneway).toBe(100);
@@ -63,6 +53,11 @@ describe('config', () => {
       const config = loadConfig();
       expect(config).not.toHaveProperty('kiwiBaseUrl');
     });
+
+    it('should not have googleFlightsBaseUrl field', () => {
+      const config = loadConfig();
+      expect(config).not.toHaveProperty('googleFlightsBaseUrl');
+    });
   });
 
   describe('getDefaultConfig', () => {
@@ -73,7 +68,6 @@ describe('config', () => {
       expect(defaults.defaultMaxPriceOneway).toEqual(config.defaultMaxPriceOneway);
       expect(defaults.defaultMaxPriceRoundtrip).toEqual(config.defaultMaxPriceRoundtrip);
       expect(defaults.defaultLimit).toEqual(config.defaultLimit);
-      expect(defaults.googleFlightsBaseUrl).toEqual(config.googleFlightsBaseUrl);
     });
 
     it('should return a copy of defaults (not same reference)', () => {
@@ -92,6 +86,7 @@ describe('config', () => {
       const defaults = getDefaultConfig();
       expect(defaults).not.toHaveProperty('kiwiApiKey');
       expect(defaults).not.toHaveProperty('kiwiBaseUrl');
+      expect(defaults).not.toHaveProperty('googleFlightsBaseUrl');
     });
   });
 });

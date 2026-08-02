@@ -334,11 +334,10 @@ describe('CLI Integration Tests', () => {
       }
     });
 
-    it('should not throw ConfigError when no API key is provided (no longer required)', () => {
-      // loadConfig no longer requires an API key since we migrated to Google Flights scraping
+    it('should not throw ConfigError when no API key is provided (loaded from env if present)', () => {
       const config = loadConfig();
       expect(config).toBeDefined();
-      expect(config.googleFlightsBaseUrl).toBe('https://www.google.com/travel/flights');
+      expect(config.defaultMaxPriceOneway).toBe(100);
     });
   });
 
