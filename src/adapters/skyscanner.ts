@@ -13,8 +13,10 @@ import { IRetryHandler } from '../utils/retry.js';
 import { createApiErrorFromStatus, createNetworkError, ApiError } from '../errors.js';
 
 /**
- * Entity ID mapping for Chicago airports.
+ * Entity ID mapping for Chicago airports (origin airports).
  * These are the Skyscanner entityIds for our supported origin airports.
+ * Note: These are used as a fast lookup; if they become stale, resolveAirportEntityId
+ * will be used as a fallback via the searchAirport endpoint.
  */
 const AIRPORT_ENTITY_IDS: Record<string, string> = {
   ORD: '95565059', // Chicago O'Hare
@@ -22,9 +24,14 @@ const AIRPORT_ENTITY_IDS: Record<string, string> = {
 };
 
 /**
- * Entity ID for the United States (country-level).
+ * Popular US destination IATA codes used for country-level "fly_to=US" searches.
+ * Instead of guessing entity IDs or relying on countryDestination endpoint,
+ * we resolve these via the searchAirport endpoint to get real entity IDs.
  */
-const US_COUNTRY_ENTITY_ID = '29475437';
+const POPULAR_US_DESTINATIONS: string[] = [
+  'LAX', 'JFK', 'MIA', 'LAS', 'DEN', 'MCO', 'SFO', 'ATL', 'PHX', 'SEA',
+  'FLL', 'SAN', 'AUS', 'BNA', 'MSP', 'DTW', 'TPA', 'DFW', 'IAH', 'SLC',
+];
 
 /**
  * Request parameters for our flight search adapter.
@@ -166,6 +173,8 @@ interface RawSkyscannerItinerary {
  */
 export class SkyscannerAdapter implements IFlightAdapter {
   private readonly axiosInstance: AxiosInstance;
+  /** Cache resolved entity IDs to avoid repeated searchAirport calls */
+  private readonly entityIdCache: Map<string, string> = new Map();
 
   /**
    * Creates a new SkyscannerAdapter instance.
@@ -209,30 +218,18 @@ export class SkyscannerAdapter implements IFlightAdapter {
   private async makeRequest(request: SkyscannerSearchRequest): Promise<SkyscannerFlight[]> {
     try {
       // Resolve origin entity ID
-      const originEntityId = AIRPORT_ENTITY_IDS[request.fly_from];
-      if (!originEntityId) {
-        throw new ApiError(`Unknown origin airport: ${request.fly_from}`);
-      }
-
-      // Resolve destination entity ID
-      let destinationEntityId: string;
-      if (request.fly_to === 'US') {
-        // For "everywhere in US", we use the country entity and the countryDestination endpoint
-        // But searchFlights doesn't support country-level. We'll search popular US destinations.
-        // Actually, the API supports city-level entityIds. For "all US", we'll use a broad approach.
-        destinationEntityId = US_COUNTRY_ENTITY_ID;
-      } else {
-        // Specific airport - look up or use entity search
-        destinationEntityId = await this.resolveAirportEntityId(request.fly_to);
-      }
+      const originEntityId = await this.resolveAirportEntityId(request.fly_from);
 
       // Determine if this is a country-level search (fly_to=US)
       const isCountrySearch = request.fly_to === 'US';
 
       if (isCountrySearch) {
-        // For country-level search, use everywhereDestination + countryDestination flow
-        return await this.searchCountryDestinations(request, originEntityId, destinationEntityId);
+        // For country-level search, resolve and search popular US destinations
+        return await this.searchCountryDestinations(request, originEntityId);
       }
+
+      // Resolve destination entity ID via searchAirport
+      const destinationEntityId = await this.resolveAirportEntityId(request.fly_to);
 
       // Build the searchFlights request body
       const body: Record<string, unknown> = {
@@ -299,148 +296,34 @@ export class SkyscannerAdapter implements IFlightAdapter {
   }
 
   /**
-   * Searches all US destinations by using countryDestination endpoint first,
-   * then searching the cheapest cities.
+   * Searches US destinations by resolving IATA codes to entity IDs via searchAirport,
+   * then searching flights for each resolved destination.
+   * This approach is reliable because it uses real IATA codes instead of guessed entity IDs.
    */
   private async searchCountryDestinations(
     request: SkyscannerSearchRequest,
-    originEntityId: string,
-    countryEntityId: string
-  ): Promise<SkyscannerFlight[]> {
-    try {
-      // Use countryDestination to find available cities
-      const countryBody = {
-        originEntityId,
-        destinationEntityId: countryEntityId,
-        departureDate: request.date_from,
-        adults: 1,
-        currencyCode: 'USD',
-        locale: 'en-US',
-        market: 'US',
-      };
-
-      const countryResponse = await this.axiosInstance.post(
-        '/api/v3/flights/countryDestination',
-        countryBody
-      );
-
-      if (!countryResponse.data?.status || !countryResponse.data?.data?.countryDestination) {
-        // Fallback: search a few popular US destinations directly
-        return this.searchPopularDestinations(request, originEntityId);
-      }
-
-      const countryData = countryResponse.data.data.countryDestination;
-      const results = countryData.results;
-
-      if (!results || typeof results !== 'object') {
-        return this.searchPopularDestinations(request, originEntityId);
-      }
-
-      // Extract city entity IDs from results (limited to get good coverage)
-      const cityEntityIds: string[] = [];
-      const resultValues = Object.values(results) as Array<{
-        content?: { location?: { name?: string } };
-        destinationEntityId?: string;
-        flightQuote?: { rawPrice?: number };
-      }>;
-
-      // Filter by price and collect city entity IDs
-      for (const result of resultValues) {
-        if (result.destinationEntityId) {
-          const rawPrice = result.flightQuote?.rawPrice ?? Infinity;
-          if (rawPrice <= request.price_to) {
-            cityEntityIds.push(result.destinationEntityId);
-          }
-        }
-        if (cityEntityIds.length >= 10) break; // Limit parallel searches
-      }
-
-      if (cityEntityIds.length === 0) {
-        return [];
-      }
-
-      // Search each cheap destination in parallel (limited to 5 concurrent)
-      const flights: SkyscannerFlight[] = [];
-      const batchSize = 5;
-
-      for (let i = 0; i < cityEntityIds.length; i += batchSize) {
-        const batch = cityEntityIds.slice(i, i + batchSize);
-        const batchPromises = batch.map(async (destEntityId) => {
-          try {
-            const body: Record<string, unknown> = {
-              originEntityId,
-              destinationEntityId: destEntityId,
-              departureDate: request.date_from,
-              adults: 1,
-              currencyCode: 'USD',
-              locale: 'en-US',
-              market: 'US',
-              filterType: request.max_stopovers === 0 ? 'direct' : 'cheapest',
-            };
-
-            if (request.flight_type === 'round' && request.nights_in_dst_from !== undefined) {
-              const depDate = new Date(request.date_from);
-              const returnDate = new Date(depDate);
-              returnDate.setDate(depDate.getDate() + (request.nights_in_dst_from ?? 2));
-              body.returnDate = this.formatDate(returnDate);
-            }
-
-            const resp = await this.axiosInstance.post('/api/v3/flights/searchFlights', body);
-            if (resp.data?.status && resp.data?.data?.itineraries) {
-              return this.transformItineraries(resp.data.data.itineraries, request);
-            }
-            return [];
-          } catch {
-            return []; // Skip failed individual searches
-          }
-        });
-
-        const batchResults = await Promise.all(batchPromises);
-        for (const result of batchResults) {
-          flights.push(...result);
-        }
-      }
-
-      return flights;
-    } catch {
-      // Fallback to popular destinations if country search fails
-      return this.searchPopularDestinations(request, originEntityId);
-    }
-  }
-
-  /**
-   * Fallback: search popular US destinations when country search is unavailable.
-   */
-  private async searchPopularDestinations(
-    request: SkyscannerSearchRequest,
     originEntityId: string
   ): Promise<SkyscannerFlight[]> {
-    // Popular US destination entity IDs (cities)
-    const popularDestinations: Array<{ entityId: string; city: string }> = [
-      { entityId: '27537542', city: 'New York' },
-      { entityId: '27544850', city: 'Los Angeles' },
-      { entityId: '27539525', city: 'Miami' },
-      { entityId: '27536671', city: 'Las Vegas' },
-      { entityId: '27544008', city: 'Denver' },
-      { entityId: '27540516', city: 'Orlando' },
-      { entityId: '27541738', city: 'San Francisco' },
-      { entityId: '27544051', city: 'Atlanta' },
-      { entityId: '27540658', city: 'Phoenix' },
-      { entityId: '27541846', city: 'Seattle' },
-    ];
-
     const flights: SkyscannerFlight[] = [];
     const batchSize = 5;
 
-    for (let i = 0; i < popularDestinations.length; i += batchSize) {
-      const batch = popularDestinations.slice(i, i + batchSize);
-      const batchPromises = batch.map(async (dest) => {
+    // Filter out the origin airport from the destination list
+    const destinations = POPULAR_US_DESTINATIONS.filter(
+      (iata) => iata !== request.fly_from
+    );
+
+    for (let i = 0; i < destinations.length; i += batchSize) {
+      const batch = destinations.slice(i, i + batchSize);
+      const batchPromises = batch.map(async (iataCode) => {
         try {
+          // Resolve the IATA code to a real entity ID
+          const destEntityId = await this.resolveAirportEntityId(iataCode);
+
           const body: Record<string, unknown> = {
             originEntityId,
-            destinationEntityId: dest.entityId,
+            destinationEntityId: destEntityId,
             departureDate: request.date_from,
-            adults: 1,
+            adults: request.adults ?? 1,
             currencyCode: 'USD',
             locale: 'en-US',
             market: 'US',
@@ -459,8 +342,9 @@ export class SkyscannerAdapter implements IFlightAdapter {
             return this.transformItineraries(resp.data.data.itineraries, request);
           }
           return [];
-        } catch {
-          return [];
+        } catch (err) {
+          console.error(`[SkyscannerAdapter] Failed to search ${iataCode}:`, err instanceof Error ? err.message : err);
+          return []; // Skip failed individual searches
         }
       });
 
@@ -470,7 +354,9 @@ export class SkyscannerAdapter implements IFlightAdapter {
       }
     }
 
-    return flights;
+    // Sort all results by price and apply limit
+    flights.sort((a, b) => a.price - b.price);
+    return flights.slice(0, request.limit);
   }
 
   /**
@@ -502,11 +388,20 @@ export class SkyscannerAdapter implements IFlightAdapter {
 
   /**
    * Resolves an IATA airport code to a Skyscanner entity ID using the searchAirport endpoint.
+   * Results are cached to avoid repeated lookups for the same code.
    */
   private async resolveAirportEntityId(iataCode: string): Promise<string> {
-    // Check our known mapping first
+    // Check the in-memory cache first
+    const cached = this.entityIdCache.get(iataCode);
+    if (cached) {
+      return cached;
+    }
+
+    // Check our known static mapping
     if (AIRPORT_ENTITY_IDS[iataCode]) {
-      return AIRPORT_ENTITY_IDS[iataCode]!;
+      const id = AIRPORT_ENTITY_IDS[iataCode]!;
+      this.entityIdCache.set(iataCode, id);
+      return id;
     }
 
     try {
@@ -519,15 +414,20 @@ export class SkyscannerAdapter implements IFlightAdapter {
         const results = response.data.data;
         for (const result of results) {
           if (result.navigation?.entityType === 'AIRPORT' && result.navigation?.entityId) {
-            return result.navigation.entityId;
+            const entityId = result.navigation.entityId;
+            this.entityIdCache.set(iataCode, entityId);
+            return entityId;
           }
         }
         // Fallback to first result with an entityId
         if (results[0]?.navigation?.entityId) {
-          return results[0].navigation.entityId;
+          const entityId = results[0].navigation.entityId;
+          this.entityIdCache.set(iataCode, entityId);
+          return entityId;
         }
       }
-    } catch {
+    } catch (err) {
+      console.error(`[SkyscannerAdapter] Failed to resolve entity ID for ${iataCode}:`, err instanceof Error ? err.message : err);
       // Fall through to error
     }
 
