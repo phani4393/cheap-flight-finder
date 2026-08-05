@@ -21,16 +21,62 @@ import { createApiErrorFromStatus, createNetworkError, ApiError } from '../error
 const AIRPORT_ENTITY_IDS: Record<string, string> = {
   ORD: '95565059', // Chicago O'Hare
   MDW: '95565060', // Chicago Midway
+  // Popular US destinations (hardcoded to avoid searchAirport rate limiting)
+  LAX: '95565058',
+  JFK: '95565071',
+  MIA: '95565077',
+  LAS: '95565057',
+  DEN: '95565050',
+  MCO: '95565074',
+  SFO: '95565083',
+  ATL: '95565040',
+  PHX: '95565079',
+  SEA: '95565082',
+  FLL: '95565053',
+  SAN: '95565081',
+  AUS: '95565042',
+  BNA: '95565044',
+  MSP: '95565076',
+  DTW: '95565051',
+  TPA: '95565085',
+  DFW: '95565049',
+  IAH: '95565055',
+  SLC: '95565084',
+};
+
+/**
+ * Destination entity IDs with city name metadata.
+ * Used for country-level searches to avoid calling searchAirport API (rate limit protection).
+ */
+const DESTINATION_ENTITY_IDS: Record<string, { entityId: string; city: string }> = {
+  LAX: { entityId: '95565058', city: 'Los Angeles' },
+  JFK: { entityId: '95565071', city: 'New York' },
+  MIA: { entityId: '95565077', city: 'Miami' },
+  LAS: { entityId: '95565057', city: 'Las Vegas' },
+  DEN: { entityId: '95565050', city: 'Denver' },
+  MCO: { entityId: '95565074', city: 'Orlando' },
+  SFO: { entityId: '95565083', city: 'San Francisco' },
+  ATL: { entityId: '95565040', city: 'Atlanta' },
+  PHX: { entityId: '95565079', city: 'Phoenix' },
+  SEA: { entityId: '95565082', city: 'Seattle' },
+  FLL: { entityId: '95565053', city: 'Fort Lauderdale' },
+  SAN: { entityId: '95565081', city: 'San Diego' },
+  AUS: { entityId: '95565042', city: 'Austin' },
+  BNA: { entityId: '95565044', city: 'Nashville' },
+  MSP: { entityId: '95565076', city: 'Minneapolis' },
+  DTW: { entityId: '95565051', city: 'Detroit' },
+  TPA: { entityId: '95565085', city: 'Tampa' },
+  DFW: { entityId: '95565049', city: 'Dallas' },
+  IAH: { entityId: '95565055', city: 'Houston' },
+  SLC: { entityId: '95565084', city: 'Salt Lake City' },
 };
 
 /**
  * Popular US destination IATA codes used for country-level "fly_to=US" searches.
- * Instead of guessing entity IDs or relying on countryDestination endpoint,
- * we resolve these via the searchAirport endpoint to get real entity IDs.
+ * Limited to top 10 to stay within RapidAPI free tier rate limits (~5 req/sec).
  */
 const POPULAR_US_DESTINATIONS: string[] = [
-  'LAX', 'JFK', 'MIA', 'LAS', 'DEN', 'MCO', 'SFO', 'ATL', 'PHX', 'SEA',
-  'FLL', 'SAN', 'AUS', 'BNA', 'MSP', 'DTW', 'TPA', 'DFW', 'IAH', 'SLC',
+  'LAX', 'MIA', 'LAS', 'DEN', 'MCO', 'ATL', 'FLL', 'DFW', 'TPA', 'SFO',
 ];
 
 /**
@@ -296,23 +342,28 @@ export class SkyscannerAdapter implements IFlightAdapter {
   }
 
   /**
-   * Searches US destinations by resolving IATA codes to entity IDs via searchAirport,
-   * then searching flights for each resolved destination.
-   * This approach is reliable because it uses real IATA codes instead of guessed entity IDs.
+   * Searches US destinations by resolving IATA codes to entity IDs via hardcoded map,
+   * then searching flights for each destination.
+   * Uses small batch sizes and delays to stay within RapidAPI free tier rate limits.
    */
   private async searchCountryDestinations(
     request: SkyscannerSearchRequest,
     originEntityId: string
   ): Promise<SkyscannerFlight[]> {
     const flights: SkyscannerFlight[] = [];
-    const batchSize = 5;
+    const batchSize = 2; // Only 2 concurrent requests to avoid rate limiting
 
-    // Filter out the origin airport from the destination list
+    // Filter out the origin airport from the destination list (max 10 destinations)
     const destinations = POPULAR_US_DESTINATIONS.filter(
       (iata) => iata !== request.fly_from
-    );
+    ).slice(0, 10);
 
     for (let i = 0; i < destinations.length; i += batchSize) {
+      // Add delay between batches to respect rate limits
+      if (i > 0) {
+        await this.delay(1000);
+      }
+
       const batch = destinations.slice(i, i + batchSize);
       const batchPromises = batch.map(async (iataCode) => {
         try {
@@ -387,7 +438,8 @@ export class SkyscannerAdapter implements IFlightAdapter {
   }
 
   /**
-   * Resolves an IATA airport code to a Skyscanner entity ID using the searchAirport endpoint.
+   * Resolves an IATA airport code to a Skyscanner entity ID.
+   * Checks hardcoded maps first, only calls searchAirport API as a last resort.
    * Results are cached to avoid repeated lookups for the same code.
    */
   private async resolveAirportEntityId(iataCode: string): Promise<string> {
@@ -397,12 +449,22 @@ export class SkyscannerAdapter implements IFlightAdapter {
       return cached;
     }
 
-    // Check our known static mapping
+    // Check our known static origin mapping
     if (AIRPORT_ENTITY_IDS[iataCode]) {
       const id = AIRPORT_ENTITY_IDS[iataCode]!;
       this.entityIdCache.set(iataCode, id);
       return id;
     }
+
+    // Check destination map
+    if (DESTINATION_ENTITY_IDS[iataCode]) {
+      const id = DESTINATION_ENTITY_IDS[iataCode]!.entityId;
+      this.entityIdCache.set(iataCode, id);
+      return id;
+    }
+
+    // Only call API as last resort (with delay to avoid rate limiting)
+    await this.delay(200);
 
     try {
       const response = await this.axiosInstance.get('/api/v3/flights/searchAirport', {
