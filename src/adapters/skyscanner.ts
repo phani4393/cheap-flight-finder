@@ -19,29 +19,21 @@ import { createApiErrorFromStatus, createNetworkError, ApiError } from '../error
  * will be used as a fallback via the searchAirport endpoint.
  */
 const AIRPORT_ENTITY_IDS: Record<string, string> = {
-  ORD: '95565059', // Chicago O'Hare
-  MDW: '95565060', // Chicago Midway
-  // Popular US destinations (hardcoded to avoid searchAirport rate limiting)
-  LAX: '95565058',
-  JFK: '95565071',
-  MIA: '95565077',
-  LAS: '95565057',
-  DEN: '95565050',
-  MCO: '95565074',
-  SFO: '95565083',
-  ATL: '95565040',
-  PHX: '95565079',
-  SEA: '95565082',
-  FLL: '95565053',
-  SAN: '95565081',
-  AUS: '95565042',
-  BNA: '95565044',
-  MSP: '95565076',
-  DTW: '95565051',
-  TPA: '95565085',
-  DFW: '95565049',
-  IAH: '95565055',
-  SLC: '95565084',
+  // Origins (Chicago) - verified 2026-08-05 via searchAirport API
+  ORD: '95673392', // Chicago O'Hare International
+  MDW: '95673391', // Chicago Midway
+  // Destinations - verified 2026-08-05 via searchAirport API
+  LAX: '95673368', // Los Angeles International
+  MIA: '95673821', // Miami International
+  LAS: '95673753', // Harry Reid International (Las Vegas)
+  DEN: '95673705', // Denver International
+  MCO: '95674009', // Orlando International
+  SFO: '95673577', // San Francisco International
+  ATL: '27541735', // Atlanta (city)
+  PHX: '95673480', // Phoenix Sky Harbor
+  FLL: '104120241', // Fort Lauderdale International
+  DFW: '95673499', // Dallas Fort Worth International
+  TPA: '95673870', // Tampa International
 };
 
 /**
@@ -49,26 +41,17 @@ const AIRPORT_ENTITY_IDS: Record<string, string> = {
  * Used for country-level searches to avoid calling searchAirport API (rate limit protection).
  */
 const DESTINATION_ENTITY_IDS: Record<string, { entityId: string; city: string }> = {
-  LAX: { entityId: '95565058', city: 'Los Angeles' },
-  JFK: { entityId: '95565071', city: 'New York' },
-  MIA: { entityId: '95565077', city: 'Miami' },
-  LAS: { entityId: '95565057', city: 'Las Vegas' },
-  DEN: { entityId: '95565050', city: 'Denver' },
-  MCO: { entityId: '95565074', city: 'Orlando' },
-  SFO: { entityId: '95565083', city: 'San Francisco' },
-  ATL: { entityId: '95565040', city: 'Atlanta' },
-  PHX: { entityId: '95565079', city: 'Phoenix' },
-  SEA: { entityId: '95565082', city: 'Seattle' },
-  FLL: { entityId: '95565053', city: 'Fort Lauderdale' },
-  SAN: { entityId: '95565081', city: 'San Diego' },
-  AUS: { entityId: '95565042', city: 'Austin' },
-  BNA: { entityId: '95565044', city: 'Nashville' },
-  MSP: { entityId: '95565076', city: 'Minneapolis' },
-  DTW: { entityId: '95565051', city: 'Detroit' },
-  TPA: { entityId: '95565085', city: 'Tampa' },
-  DFW: { entityId: '95565049', city: 'Dallas' },
-  IAH: { entityId: '95565055', city: 'Houston' },
-  SLC: { entityId: '95565084', city: 'Salt Lake City' },
+  LAX: { entityId: '95673368', city: 'Los Angeles' },
+  MIA: { entityId: '95673821', city: 'Miami' },
+  LAS: { entityId: '95673753', city: 'Las Vegas' },
+  DEN: { entityId: '95673705', city: 'Denver' },
+  MCO: { entityId: '95674009', city: 'Orlando' },
+  SFO: { entityId: '95673577', city: 'San Francisco' },
+  ATL: { entityId: '27541735', city: 'Atlanta' },
+  PHX: { entityId: '95673480', city: 'Phoenix' },
+  FLL: { entityId: '104120241', city: 'Fort Lauderdale' },
+  DFW: { entityId: '95673499', city: 'Dallas' },
+  TPA: { entityId: '95673870', city: 'Tampa' },
 };
 
 /**
