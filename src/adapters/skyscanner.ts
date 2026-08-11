@@ -233,18 +233,16 @@ export class SkyscannerAdapter implements IFlightAdapter {
    * Search flights via the Skyscanner Flight Scanner API.
    * When the request spans a date range, samples multiple departure dates
    * to find deals across the full window (the API only accepts a single date).
-   * For country-level searches (fly_to=US), limits to 3 date samples to stay
-   * within free-tier rate limits.
+   * For country-level searches (fly_to=US), limits to 2 date samples to stay
+   * within free-tier rate limits. For single-destination searches, respects
+   * the date range as-is.
    */
   async searchFlights(request: SkyscannerSearchRequest): Promise<SkyscannerFlight[]> {
-    // For country searches (US), each date triggers 6+ destination API calls,
-    // so limit date samples aggressively to avoid rate limiting.
-    // Budget: 2 origins × 6 destinations × N dates = calls per profile
-    // Free tier ~100 calls/day, so keep N low.
+    // Determine date sampling strategy based on search type
+    // Free tier: 50 calls/month, so be very conservative
     const isCountrySearch = request.fly_to === 'US';
-    const datesToSearch = isCountrySearch
-      ? this.sampleDatesFromRange(request.date_from, request.date_to, 2)
-      : this.sampleDatesFromRange(request.date_from, request.date_to, 5);
+    const maxSamples = isCountrySearch ? 2 : 3;
+    const datesToSearch = this.sampleDatesFromRange(request.date_from, request.date_to, maxSamples);
 
     const allFlights: SkyscannerFlight[] = [];
     const seenIds = new Set<string>();
@@ -747,7 +745,7 @@ export class SkyscannerAdapter implements IFlightAdapter {
 
   /**
    * Returns an array of return-night offsets to try for round-trip searches.
-   * Picks min and max of the return window (2 searches max).
+   * Uses only the midpoint to minimize API calls on free tier.
    * Returns empty array for one-way flights.
    */
   private getReturnNightsToTry(request: SkyscannerSearchRequest): number[] {
@@ -758,12 +756,9 @@ export class SkyscannerAdapter implements IFlightAdapter {
     const min = request.nights_in_dst_from;
     const max = request.nights_in_dst_to ?? min;
 
-    if (min === max) {
-      return [min];
-    }
-
-    // Just try min and max to keep API calls down
-    return [min, max];
+    // Use midpoint only — 1 API call instead of 2-3
+    const mid = Math.round((min + max) / 2);
+    return [mid];
   }
 
   private delay(ms: number): Promise<void> {
