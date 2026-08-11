@@ -2,11 +2,17 @@ name: Cheap Flight Search
 
 on:
   schedule:
-    # Run 3x daily: 6am, 12pm, 6pm CT (UTC-5 → 11:00, 17:00, 23:00 UTC)
-    - cron: '0 11 * * *'
-    - cron: '0 17 * * *'
-    - cron: '0 23 * * *'
-  workflow_dispatch:  # Allow manual trigger
+    # Run 3x daily at different hours to spread API usage
+    # Each run executes only ONE search profile to stay within rate limits
+    - cron: '0 11 * * *'   # 6am CT → family search
+    - cron: '0 17 * * *'   # 12pm CT → weekend search
+    - cron: '0 23 * * *'   # 6pm CT → budget search
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Search profile to run (family, weekend, budget, or all)'
+        required: false
+        default: 'all'
 
 permissions:
   contents: write
@@ -34,12 +40,27 @@ jobs:
       - name: Create results directory
         run: mkdir -p results
 
+      - name: Determine which profile to run
+        id: profile
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run=${{ github.event.inputs.profile || 'all' }}" >> $GITHUB_OUTPUT
+          else
+            # Determine profile based on cron schedule (hour of trigger)
+            HOUR=$(date -u +%H)
+            if [ "$HOUR" = "11" ]; then
+              echo "run=family" >> $GITHUB_OUTPUT
+            elif [ "$HOUR" = "17" ]; then
+              echo "run=weekend" >> $GITHUB_OUTPUT
+            else
+              echo "run=budget" >> $GITHUB_OUTPUT
+            fi
+          fi
+
       # ===== SEARCH PROFILE A: Family Round-Trip (3-5 days) =====
-      # Note: --adults 2 shows per-person pricing for adults.
-      # Child (under 12) pricing is similar on most US domestic flights.
-      # Total family cost ≈ displayed price × 3 (2 adults + 1 child)
       - name: "Search: Family round-trip (3-5 days, under $300)"
         id: family
+        if: steps.profile.outputs.run == 'family' || steps.profile.outputs.run == 'all'
         continue-on-error: true
         env:
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
@@ -69,11 +90,9 @@ jobs:
           fi
 
       # ===== SEARCH PROFILE B: Weekend Getaway (Fri-Mon) =====
-      - name: "Wait for rate limit reset"
-        run: sleep 15
-
       - name: "Search: Weekend getaway (under $250)"
         id: weekend
+        if: steps.profile.outputs.run == 'weekend' || steps.profile.outputs.run == 'all'
         continue-on-error: true
         env:
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
@@ -109,11 +128,9 @@ jobs:
           fi
 
       # ===== SEARCH PROFILE C: Cheap one-way deals =====
-      - name: "Wait for rate limit reset 2"
-        run: sleep 15
-
       - name: "Search: Cheap one-way (under $120)"
         id: budget
+        if: steps.profile.outputs.run == 'budget' || steps.profile.outputs.run == 'all'
         continue-on-error: true
         env:
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}

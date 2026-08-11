@@ -237,11 +237,13 @@ export class SkyscannerAdapter implements IFlightAdapter {
    * within free-tier rate limits.
    */
   async searchFlights(request: SkyscannerSearchRequest): Promise<SkyscannerFlight[]> {
-    // For country searches (US), each date triggers 10+ destination API calls,
-    // so limit date samples aggressively to avoid rate limiting
+    // For country searches (US), each date triggers 6+ destination API calls,
+    // so limit date samples aggressively to avoid rate limiting.
+    // Budget: 2 origins × 6 destinations × N dates = calls per profile
+    // Free tier ~100 calls/day, so keep N low.
     const isCountrySearch = request.fly_to === 'US';
     const datesToSearch = isCountrySearch
-      ? this.sampleDatesFromRange(request.date_from, request.date_to, 3)
+      ? this.sampleDatesFromRange(request.date_from, request.date_to, 2)
       : this.sampleDatesFromRange(request.date_from, request.date_to, 5);
 
     const allFlights: SkyscannerFlight[] = [];
@@ -258,7 +260,7 @@ export class SkyscannerAdapter implements IFlightAdapter {
       try {
         const flights = await this.retryHandler.withRetry(
           () => this.makeRequest(singleDateRequest),
-          { maxAttempts: 2, baseDelayMs: 2000 }
+          { maxAttempts: 2, baseDelayMs: 2000, retryableStatusCodes: [408, 500, 502, 503, 504] }
         );
 
         for (const flight of flights) {
