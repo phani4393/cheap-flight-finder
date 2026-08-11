@@ -2,9 +2,9 @@ name: Cheap Flight Search
 
 on:
   schedule:
-    # Once daily at 12pm CT (17:00 UTC)
-    - cron: '0 17 * * *'
-  workflow_dispatch:  # Manual trigger
+    # Weekdays only at 12pm CT (17:00 UTC) — ~22 calls/month, leaves 28 for manual use
+    - cron: '0 17 * * 1-5'
+  workflow_dispatch:  # Manual trigger anytime
 
 permissions:
   contents: write
