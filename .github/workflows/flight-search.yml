@@ -34,11 +34,11 @@ jobs:
       - name: Create results directory
         run: mkdir -p results
 
-      # ===== SEARCH PROFILE A: Family Round-Trip (3-4 days) =====
+      # ===== SEARCH PROFILE A: Family Round-Trip (3-5 days) =====
       # Note: --adults 2 shows per-person pricing for adults.
       # Child (under 12) pricing is similar on most US domestic flights.
       # Total family cost ≈ displayed price × 3 (2 adults + 1 child)
-      - name: "Search: Family round-trip (3-4 days, under $200)"
+      - name: "Search: Family round-trip (3-5 days, under $300)"
         id: family
         continue-on-error: true
         env:
@@ -51,8 +51,8 @@ jobs:
           node dist/cli.js \
             --from BOTH \
             --round-trip \
-            --return-days 3-4 \
-            --max-price 200 \
+            --return-days 3-5 \
+            --max-price 300 \
             --adults 2 \
             --limit 15 \
             --export "$FILENAME" 2>&1 | tee family_output.txt
@@ -69,7 +69,7 @@ jobs:
           fi
 
       # ===== SEARCH PROFILE B: Weekend Getaway (Fri-Mon) =====
-      - name: "Search: Weekend getaway (nonstop, under $150)"
+      - name: "Search: Weekend getaway (under $250)"
         id: weekend
         continue-on-error: true
         env:
@@ -87,8 +87,7 @@ jobs:
             --from BOTH \
             --round-trip \
             --return-days 2-3 \
-            --nonstop \
-            --max-price 150 \
+            --max-price 250 \
             --adults 2 \
             --date-from "$NEXT_FRI" \
             --date-to "$NEXT_FRI_PLUS2" \
@@ -106,8 +105,8 @@ jobs:
             echo "count=0" >> $GITHUB_OUTPUT
           fi
 
-      # ===== SEARCH PROFILE C: Ultra-cheap one-way deals =====
-      - name: "Search: Ultra-cheap one-way (under $60, nonstop)"
+      # ===== SEARCH PROFILE C: Cheap one-way deals =====
+      - name: "Search: Cheap one-way (under $120)"
         id: budget
         continue-on-error: true
         env:
@@ -119,8 +118,7 @@ jobs:
           
           node dist/cli.js \
             --from BOTH \
-            --nonstop \
-            --max-price 60 \
+            --max-price 120 \
             --limit 10 \
             --export "$FILENAME" 2>&1 | tee budget_output.txt
           
