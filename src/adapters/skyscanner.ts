@@ -233,18 +233,24 @@ export class SkyscannerAdapter implements IFlightAdapter {
    * Search flights via the Skyscanner Flight Scanner API.
    * When the request spans a date range, samples multiple departure dates
    * to find deals across the full window (the API only accepts a single date).
+   * For country-level searches (fly_to=US), limits to 3 date samples to stay
+   * within free-tier rate limits.
    */
   async searchFlights(request: SkyscannerSearchRequest): Promise<SkyscannerFlight[]> {
-    // Determine which dates to search
-    const datesToSearch = this.sampleDatesFromRange(request.date_from, request.date_to);
+    // For country searches (US), each date triggers 10+ destination API calls,
+    // so limit date samples aggressively to avoid rate limiting
+    const isCountrySearch = request.fly_to === 'US';
+    const datesToSearch = isCountrySearch
+      ? this.sampleDatesFromRange(request.date_from, request.date_to, 3)
+      : this.sampleDatesFromRange(request.date_from, request.date_to, 5);
 
     const allFlights: SkyscannerFlight[] = [];
     const seenIds = new Set<string>();
 
     for (const date of datesToSearch) {
-      // Rate-limit between date searches
-      if (allFlights.length > 0 || datesToSearch.indexOf(date) > 0) {
-        await this.delay(1200);
+      // Rate-limit between date searches — longer delay for country searches
+      if (datesToSearch.indexOf(date) > 0) {
+        await this.delay(isCountrySearch ? 3000 : 1200);
       }
 
       const singleDateRequest = { ...request, date_from: date, date_to: date };
@@ -252,7 +258,7 @@ export class SkyscannerAdapter implements IFlightAdapter {
       try {
         const flights = await this.retryHandler.withRetry(
           () => this.makeRequest(singleDateRequest),
-          { maxAttempts: 3, baseDelayMs: 1000 }
+          { maxAttempts: 2, baseDelayMs: 2000 }
         );
 
         for (const flight of flights) {
@@ -260,6 +266,11 @@ export class SkyscannerAdapter implements IFlightAdapter {
             seenIds.add(flight.id);
             allFlights.push(flight);
           }
+        }
+
+        // If we already have enough results, stop early
+        if (allFlights.length >= request.limit) {
+          break;
         }
       } catch (err) {
         // Log but continue with other dates
@@ -273,11 +284,14 @@ export class SkyscannerAdapter implements IFlightAdapter {
   }
 
   /**
-   * Samples up to 5 evenly-spaced dates from a date range.
+   * Samples evenly-spaced dates from a date range.
    * If the range is a single day, returns just that date.
-   * This keeps API calls reasonable while covering the full window.
+   *
+   * @param dateFrom - Start date YYYY-MM-DD
+   * @param dateTo - End date YYYY-MM-DD
+   * @param maxSamples - Maximum number of dates to return (default: 5)
    */
-  private sampleDatesFromRange(dateFrom: string, dateTo: string): string[] {
+  private sampleDatesFromRange(dateFrom: string, dateTo: string, maxSamples: number = 5): string[] {
     const start = new Date(dateFrom);
     const end = new Date(dateTo);
     const totalDays = Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
@@ -287,8 +301,8 @@ export class SkyscannerAdapter implements IFlightAdapter {
       return [dateFrom];
     }
 
-    // For short ranges (1-5 days), search every day
-    if (totalDays <= 5) {
+    // For short ranges (fewer days than max samples), search every day
+    if (totalDays < maxSamples) {
       const dates: string[] = [];
       for (let i = 0; i <= totalDays; i++) {
         const d = new Date(start);
@@ -298,8 +312,7 @@ export class SkyscannerAdapter implements IFlightAdapter {
       return dates;
     }
 
-    // For longer ranges, sample 5 evenly-spaced dates
-    const maxSamples = 5;
+    // For longer ranges, sample evenly-spaced dates
     const step = totalDays / (maxSamples - 1);
     const dates: string[] = [];
 
@@ -446,15 +459,16 @@ export class SkyscannerAdapter implements IFlightAdapter {
     const flights: SkyscannerFlight[] = [];
     const batchSize = 2; // Only 2 concurrent requests to avoid rate limiting
 
-    // Filter out the origin airport from the destination list (max 10 destinations)
+    // Filter out the origin airport from the destination list (max 6 destinations
+    // to stay within free-tier limits: ~5 requests/sec with 2s gaps)
     const destinations = POPULAR_US_DESTINATIONS.filter(
       (iata) => iata !== request.fly_from
-    ).slice(0, 10);
+    ).slice(0, 6);
 
     for (let i = 0; i < destinations.length; i += batchSize) {
       // Add delay between batches to respect rate limits
       if (i > 0) {
-        await this.delay(1000);
+        await this.delay(2000);
       }
 
       const batch = destinations.slice(i, i + batchSize);
@@ -731,7 +745,7 @@ export class SkyscannerAdapter implements IFlightAdapter {
 
   /**
    * Returns an array of return-night offsets to try for round-trip searches.
-   * Picks min, midpoint, and max of the return window (up to 3 searches).
+   * Picks min and max of the return window (2 searches max).
    * Returns empty array for one-way flights.
    */
   private getReturnNightsToTry(request: SkyscannerSearchRequest): number[] {
@@ -746,11 +760,8 @@ export class SkyscannerAdapter implements IFlightAdapter {
       return [min];
     }
 
-    const mid = Math.round((min + max) / 2);
-
-    // Avoid duplicates if range is small (e.g., 2-3 → [2, 3])
-    const nights = new Set([min, mid, max]);
-    return Array.from(nights);
+    // Just try min and max to keep API calls down
+    return [min, max];
   }
 
   private delay(ms: number): Promise<void> {
