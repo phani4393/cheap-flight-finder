@@ -69,8 +69,15 @@ jobs:
           TIME=$(date +%H%M)
           FILENAME="results/family_${DATE}_${TIME}.csv"
           
+          # Rotate through popular destinations daily
+          DESTINATIONS=("LAX" "MIA" "LAS" "DEN" "MCO" "ATL" "FLL")
+          DAY_OF_YEAR=$(date +%j)
+          IDX=$(( (DAY_OF_YEAR + 2) % ${#DESTINATIONS[@]} ))
+          DEST=${DESTINATIONS[$IDX]}
+          
           node dist/cli.js \
             --from BOTH \
+            --destination "$DEST" \
             --round-trip \
             --return-days 3-5 \
             --max-price 300 \
@@ -101,12 +108,19 @@ jobs:
           TIME=$(date +%H%M)
           FILENAME="results/weekend_${DATE}_${TIME}.csv"
           
+          # Rotate through popular destinations daily (offset from other profiles)
+          DESTINATIONS=("LAX" "MIA" "LAS" "DEN" "MCO" "ATL" "FLL")
+          DAY_OF_YEAR=$(date +%j)
+          IDX=$(( (DAY_OF_YEAR + 4) % ${#DESTINATIONS[@]} ))
+          DEST=${DESTINATIONS[$IDX]}
+          
           # Find next Friday
           NEXT_FRI=$(date -d "next friday" +%Y-%m-%d 2>/dev/null || date -d "friday" +%Y-%m-%d)
           NEXT_FRI_PLUS2=$(date -d "$NEXT_FRI + 14 days" +%Y-%m-%d 2>/dev/null || date -d "friday + 14 days" +%Y-%m-%d)
           
           node dist/cli.js \
             --from BOTH \
+            --destination "$DEST" \
             --round-trip \
             --return-days 2-3 \
             --max-price 250 \
@@ -128,6 +142,7 @@ jobs:
           fi
 
       # ===== SEARCH PROFILE C: Cheap one-way deals =====
+      # Search one specific destination (rotates daily) to minimize API calls
       - name: "Search: Cheap one-way (under $120)"
         id: budget
         if: steps.profile.outputs.run == 'budget' || steps.profile.outputs.run == 'all'
@@ -139,8 +154,15 @@ jobs:
           TIME=$(date +%H%M)
           FILENAME="results/budget_${DATE}_${TIME}.csv"
           
+          # Rotate through popular destinations daily
+          DESTINATIONS=("LAX" "MIA" "LAS" "DEN" "MCO" "ATL" "FLL")
+          DAY_OF_YEAR=$(date +%j)
+          IDX=$((DAY_OF_YEAR % ${#DESTINATIONS[@]}))
+          DEST=${DESTINATIONS[$IDX]}
+          
           node dist/cli.js \
             --from BOTH \
+            --destination "$DEST" \
             --max-price 120 \
             --limit 10 \
             --export "$FILENAME" 2>&1 | tee budget_output.txt
