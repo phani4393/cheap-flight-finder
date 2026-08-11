@@ -231,14 +231,86 @@ export class SkyscannerAdapter implements IFlightAdapter {
 
   /**
    * Search flights via the Skyscanner Flight Scanner API.
-   * Translates our request format to the API's format and normalizes the response.
+   * When the request spans a date range, samples multiple departure dates
+   * to find deals across the full window (the API only accepts a single date).
    */
   async searchFlights(request: SkyscannerSearchRequest): Promise<SkyscannerFlight[]> {
-    const flights = await this.retryHandler.withRetry(
-      () => this.makeRequest(request),
-      { maxAttempts: 3, baseDelayMs: 1000 }
-    );
-    return flights;
+    // Determine which dates to search
+    const datesToSearch = this.sampleDatesFromRange(request.date_from, request.date_to);
+
+    const allFlights: SkyscannerFlight[] = [];
+    const seenIds = new Set<string>();
+
+    for (const date of datesToSearch) {
+      // Rate-limit between date searches
+      if (allFlights.length > 0 || datesToSearch.indexOf(date) > 0) {
+        await this.delay(1200);
+      }
+
+      const singleDateRequest = { ...request, date_from: date, date_to: date };
+
+      try {
+        const flights = await this.retryHandler.withRetry(
+          () => this.makeRequest(singleDateRequest),
+          { maxAttempts: 3, baseDelayMs: 1000 }
+        );
+
+        for (const flight of flights) {
+          if (!seenIds.has(flight.id)) {
+            seenIds.add(flight.id);
+            allFlights.push(flight);
+          }
+        }
+      } catch (err) {
+        // Log but continue with other dates
+        console.error(`[SkyscannerAdapter] Search failed for date ${date}:`, err instanceof Error ? err.message : err);
+      }
+    }
+
+    // Sort combined results by price and respect limit
+    allFlights.sort((a, b) => a.price - b.price);
+    return allFlights.slice(0, request.limit);
+  }
+
+  /**
+   * Samples up to 5 evenly-spaced dates from a date range.
+   * If the range is a single day, returns just that date.
+   * This keeps API calls reasonable while covering the full window.
+   */
+  private sampleDatesFromRange(dateFrom: string, dateTo: string): string[] {
+    const start = new Date(dateFrom);
+    const end = new Date(dateTo);
+    const totalDays = Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+
+    // Single day or invalid range
+    if (totalDays <= 0) {
+      return [dateFrom];
+    }
+
+    // For short ranges (1-5 days), search every day
+    if (totalDays <= 5) {
+      const dates: string[] = [];
+      for (let i = 0; i <= totalDays; i++) {
+        const d = new Date(start);
+        d.setDate(d.getDate() + i);
+        dates.push(this.formatDate(d));
+      }
+      return dates;
+    }
+
+    // For longer ranges, sample 5 evenly-spaced dates
+    const maxSamples = 5;
+    const step = totalDays / (maxSamples - 1);
+    const dates: string[] = [];
+
+    for (let i = 0; i < maxSamples; i++) {
+      const dayOffset = Math.round(step * i);
+      const d = new Date(start);
+      d.setDate(d.getDate() + dayOffset);
+      dates.push(this.formatDate(d));
+    }
+
+    return dates;
   }
 
   /**
@@ -265,20 +337,11 @@ export class SkyscannerAdapter implements IFlightAdapter {
         originEntityId,
         destinationEntityId,
         departureDate: request.date_from, // YYYY-MM-DD
-        adults: 1,
+        adults: request.adults ?? 1,
         currencyCode: 'USD',
         locale: 'en-US',
         market: 'US',
       };
-
-      // Add return date for round-trip
-      if (request.flight_type === 'round' && request.nights_in_dst_from !== undefined) {
-        // For round-trip, we need a return date. Calculate from departure + nights
-        const depDate = new Date(request.date_from);
-        const returnDate = new Date(depDate);
-        returnDate.setDate(depDate.getDate() + (request.nights_in_dst_from ?? 2));
-        body.returnDate = this.formatDate(returnDate);
-      }
 
       // Add filter for nonstop
       if (request.max_stopovers === 0) {
@@ -287,27 +350,74 @@ export class SkyscannerAdapter implements IFlightAdapter {
         body.filterType = 'cheapest';
       }
 
-      const response = await this.axiosInstance.post('/api/v3/flights/searchFlights', body);
+      // For round-trips, try multiple return windows to maximize results
+      const returnNights = this.getReturnNightsToTry(request);
 
-      if (!response.data?.status || !response.data?.data?.itineraries) {
-        return [];
+      if (returnNights.length === 0) {
+        // One-way search — single request
+        const response = await this.axiosInstance.post('/api/v3/flights/searchFlights', body);
+
+        if (!response.data?.status || !response.data?.data?.itineraries) {
+          return [];
+        }
+
+        let allItineraries: RawSkyscannerItinerary[] = response.data.data.itineraries;
+        const sessionId = response.data.data.context?.sessionId;
+
+        if (response.data.data.context?.status === 'incomplete' && sessionId) {
+          const completeResults = await this.pollForComplete(sessionId);
+          if (completeResults.length > 0) {
+            allItineraries = completeResults;
+          }
+        }
+
+        return this.transformItineraries(allItineraries, request);
       }
 
-      const itineraries: RawSkyscannerItinerary[] = response.data.data.itineraries;
+      // Round-trip: try each return night offset, combine results
+      const allFlights: SkyscannerFlight[] = [];
+      const seenIds = new Set<string>();
 
-      // If status is incomplete, poll for complete results
-      const sessionId = response.data.data.context?.sessionId;
-      let allItineraries = itineraries;
+      for (const nights of returnNights) {
+        const depDate = new Date(request.date_from);
+        const returnDate = new Date(depDate);
+        returnDate.setDate(depDate.getDate() + nights);
+        const roundTripBody = { ...body, returnDate: this.formatDate(returnDate) };
 
-      if (response.data.data.context?.status === 'incomplete' && sessionId) {
-        const completeResults = await this.pollForComplete(sessionId);
-        if (completeResults.length > 0) {
-          allItineraries = completeResults;
+        try {
+          const response = await this.axiosInstance.post('/api/v3/flights/searchFlights', roundTripBody);
+
+          if (response.data?.status && response.data?.data?.itineraries) {
+            let itineraries: RawSkyscannerItinerary[] = response.data.data.itineraries;
+            const sessionId = response.data.data.context?.sessionId;
+
+            if (response.data.data.context?.status === 'incomplete' && sessionId) {
+              const completeResults = await this.pollForComplete(sessionId);
+              if (completeResults.length > 0) {
+                itineraries = completeResults;
+              }
+            }
+
+            const flights = this.transformItineraries(itineraries, request);
+            for (const f of flights) {
+              if (!seenIds.has(f.id)) {
+                seenIds.add(f.id);
+                allFlights.push(f);
+              }
+            }
+          }
+        } catch (err) {
+          console.error(`[SkyscannerAdapter] Round-trip search (${nights} nights) failed:`, err instanceof Error ? err.message : err);
+        }
+
+        // Delay between return-date attempts
+        if (returnNights.indexOf(nights) < returnNights.length - 1) {
+          await this.delay(1000);
         }
       }
 
-      // Transform and filter results
-      return this.transformItineraries(allItineraries, request);
+      allFlights.sort((a, b) => a.price - b.price);
+      return allFlights.slice(0, request.limit);
     } catch (error) {
       if (this.isAxiosError(error)) {
         if (error.response) {
@@ -365,16 +475,25 @@ export class SkyscannerAdapter implements IFlightAdapter {
           };
 
           if (request.flight_type === 'round' && request.nights_in_dst_from !== undefined) {
+            // Use midpoint of the return window for best coverage
+            const midNights = Math.round(
+              ((request.nights_in_dst_from ?? 2) + (request.nights_in_dst_to ?? request.nights_in_dst_from ?? 2)) / 2
+            );
             const depDate = new Date(request.date_from);
             const returnDate = new Date(depDate);
-            returnDate.setDate(depDate.getDate() + (request.nights_in_dst_from ?? 2));
+            returnDate.setDate(depDate.getDate() + midNights);
             body.returnDate = this.formatDate(returnDate);
           }
 
           const resp = await this.axiosInstance.post('/api/v3/flights/searchFlights', body);
           if (resp.data?.status && resp.data?.data?.itineraries) {
-            return this.transformItineraries(resp.data.data.itineraries, request);
+            const transformed = this.transformItineraries(resp.data.data.itineraries, request);
+            if (transformed.length === 0) {
+              console.error(`[SkyscannerAdapter] ${request.fly_from}→${iataCode}: ${resp.data.data.itineraries.length} itineraries from API, 0 after price/filter`);
+            }
+            return transformed;
           }
+          console.error(`[SkyscannerAdapter] ${request.fly_from}→${iataCode}: API returned no data (status=${resp.data?.status}, code=${resp.status})`);
           return [];
         } catch (err) {
           console.error(`[SkyscannerAdapter] Failed to search ${iataCode}:`, err instanceof Error ? err.message : err);
@@ -387,6 +506,8 @@ export class SkyscannerAdapter implements IFlightAdapter {
         flights.push(...result);
       }
     }
+
+    console.error(`[SkyscannerAdapter] Country search from ${request.fly_from}: searched ${destinations.length} destinations, found ${flights.length} flights under $${request.price_to}`);
 
     // Sort all results by price and apply limit
     flights.sort((a, b) => a.price - b.price);
@@ -606,6 +727,30 @@ export class SkyscannerAdapter implements IFlightAdapter {
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
+  }
+
+  /**
+   * Returns an array of return-night offsets to try for round-trip searches.
+   * Picks min, midpoint, and max of the return window (up to 3 searches).
+   * Returns empty array for one-way flights.
+   */
+  private getReturnNightsToTry(request: SkyscannerSearchRequest): number[] {
+    if (request.flight_type !== 'round' || request.nights_in_dst_from === undefined) {
+      return [];
+    }
+
+    const min = request.nights_in_dst_from;
+    const max = request.nights_in_dst_to ?? min;
+
+    if (min === max) {
+      return [min];
+    }
+
+    const mid = Math.round((min + max) / 2);
+
+    // Avoid duplicates if range is small (e.g., 2-3 → [2, 3])
+    const nights = new Set([min, mid, max]);
+    return Array.from(nights);
   }
 
   private delay(ms: number): Promise<void> {

@@ -661,6 +661,20 @@ export async function main(): Promise<void> {
   // Execute the search
   const searchResult = await searchService.search(searchParams);
   const flights = searchResult.flights;
+
+  // Diagnostic logging (visible in CI/workflow output)
+  console.error(`[search] origins=${searchParams.origins.join(',')} dest=${searchParams.destination} dates=${searchParams.dateFrom.toISOString().slice(0,10)}..${searchParams.dateTo.toISOString().slice(0,10)}`);
+  console.error(`[search] type=${searchParams.tripType} maxPrice=$${searchParams.maxPrice} nonstop=${searchParams.nonstopOnly} adults=${searchParams.adults ?? 1}`);
+  if (searchParams.tripType === 'round') {
+    console.error(`[search] returnDays=${searchParams.returnDaysMin ?? '?'}-${searchParams.returnDaysMax ?? '?'}`);
+  }
+  console.error(`[search] apiCalls=${searchResult.apiCallCount} rawResults=${searchResult.totalResultsFromApi} afterFilters=${flights.length}`);
+  if (searchResult.totalResultsFromApi > 0 && flights.length === 0) {
+    console.error(`[search] WARNING: API returned ${searchResult.totalResultsFromApi} results but all were filtered out by client-side filters`);
+  }
+  if (searchResult.totalResultsFromApi === 0) {
+    console.error(`[search] WARNING: API returned 0 results. Possible causes: rate-limited, invalid key, or no flights match the criteria at this price point`);
+  }
   
   // Display results or no-results message
   displayResults(flights, searchParams, options);
