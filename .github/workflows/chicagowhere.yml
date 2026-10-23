@@ -1,0 +1,166 @@
+name: ChicaGoWhere - Family Flight Deals
+
+# Twice weekly: Tuesday and Friday evenings (good times to catch weekend/week deals)
+# Tuesday 7pm CT = Wednesday 1am UTC
+# Friday 7pm CT = Saturday 1am UTC
+on:
+  schedule:
+    - cron: '0 1 * * 3'  # Wednesday 1am UTC (Tuesday 7pm CT)
+    - cron: '0 1 * * 6'  # Saturday 1am UTC (Friday 7pm CT)
+  workflow_dispatch:
+    inputs:
+      destination:
+        description: 'Specific destination (SEA, PDX, SLC, LAS) or ALL'
+        required: false
+        default: 'ALL'
+
+permissions:
+  contents: write
+
+env:
+  # ChicaGoWhere destinations: Seattle, Portland, Salt Lake City, Vegas
+  DESTINATIONS: "SEA PDX SLC LAS"
+  MAX_PRICE: 200
+  RETURN_DAYS: "2-4"
+
+jobs:
+  search-deals:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Create results directory
+        run: mkdir -p results
+
+      - name: Search all destinations
+        id: search
+        env:
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+        run: |
+          DATE=$(date +%Y-%m-%d)
+          TIME=$(date +%H%M)
+          TOTAL_DEALS=0
+          DEALS_FOUND=""
+          
+          # Determine which destinations to search
+          if [ "${{ github.event.inputs.destination }}" != "" ] && [ "${{ github.event.inputs.destination }}" != "ALL" ]; then
+            SEARCH_DESTS="${{ github.event.inputs.destination }}"
+          else
+            SEARCH_DESTS="${DESTINATIONS}"
+          fi
+          
+          for DEST in $SEARCH_DESTS; do
+            echo "🔍 Searching ORD/MDW → $DEST..."
+            FILENAME="results/chicagowhere_${DEST}_${DATE}_${TIME}.csv"
+            
+            # Search from BOTH origins, round-trip, under $200
+            node dist/cli.js \
+              --from BOTH \
+              --destination "$DEST" \
+              --round-trip \
+              --return-days ${RETURN_DAYS} \
+              --max-price ${MAX_PRICE} \
+              --limit 10 \
+              --export "$FILENAME" 2>&1 | tee search_output_${DEST}.txt || true
+            
+            if [ -f "$FILENAME" ]; then
+              COUNT=$(wc -l < "$FILENAME")
+              COUNT=$((COUNT - 1))  # Subtract header row
+              if [ $COUNT -gt 0 ]; then
+                TOTAL_DEALS=$((TOTAL_DEALS + COUNT))
+                DEALS_FOUND="${DEALS_FOUND}${DEST}:${COUNT} "
+                echo "✅ Found $COUNT deals for $DEST"
+              else
+                echo "❌ No deals found for $DEST under \$${MAX_PRICE}"
+                rm -f "$FILENAME"  # Remove empty file
+              fi
+            else
+              echo "❌ Search failed for $DEST"
+            fi
+            
+            # Small delay between destinations to be nice to the API
+            sleep 2
+          done
+          
+          echo "total_deals=$TOTAL_DEALS" >> $GITHUB_OUTPUT
+          echo "deals_found=$DEALS_FOUND" >> $GITHUB_OUTPUT
+          
+          if [ $TOTAL_DEALS -gt 0 ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "status=no_deals" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit results
+        if: steps.search.outputs.status == 'success'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add results/
+          git diff --cached --quiet || git commit -m "chicagowhere: ${{ steps.search.outputs.deals_found }} deals under \$${MAX_PRICE} $(date +%Y-%m-%d)"
+          git push
+
+      - name: Send Telegram alert - Deals found!
+        if: steps.search.outputs.status == 'success' && env.TELEGRAM_BOT_TOKEN != ''
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          TOTAL=${{ steps.search.outputs.total_deals }}
+          DEALS="${{ steps.search.outputs.deals_found }}"
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          
+          # Build destination breakdown
+          BREAKDOWN=""
+          for ITEM in $DEALS; do
+            DEST=$(echo $ITEM | cut -d: -f1)
+            COUNT=$(echo $ITEM | cut -d: -f2)
+            case $DEST in
+              SEA) CITY="Seattle" ;;
+              PDX) CITY="Portland" ;;
+              SLC) CITY="Salt Lake City" ;;
+              LAS) CITY="Las Vegas" ;;
+              *) CITY=$DEST ;;
+            esac
+            BREAKDOWN="${BREAKDOWN}• ${CITY}: ${COUNT} flights\n"
+          done
+          
+          MESSAGE="✈️ *ChicaGoWhere Alert!*
+          
+🎉 *${TOTAL} cheap flights found!*
+Round-trip under \$${MAX_PRICE}
+
+${BREAKDOWN}
+📋 [View all deals](${RUN_URL})"
+          
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d parse_mode="Markdown" \
+            --data-urlencode "text=${MESSAGE}" \
+            -d disable_web_page_preview=true
+
+      - name: Send Telegram notice - No deals
+        if: steps.search.outputs.status == 'no_deals' && env.TELEGRAM_BOT_TOKEN != ''
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          MESSAGE="✈️ ChicaGoWhere: No deals under \$${MAX_PRICE} today for SEA/PDX/SLC/LAS. Will check again in a few days!"
+          
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${MESSAGE}"

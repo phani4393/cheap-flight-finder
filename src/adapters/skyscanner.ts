@@ -34,6 +34,10 @@ const AIRPORT_ENTITY_IDS: Record<string, string> = {
   FLL: '104120241', // Fort Lauderdale International
   DFW: '95673499', // Dallas Fort Worth International
   TPA: '95673870', // Tampa International
+  // ChicaGoWhere destinations - added 2026-10-23
+  SEA: '95673535', // Seattle-Tacoma International
+  PDX: '95673584', // Portland International
+  SLC: '95673611', // Salt Lake City International
 };
 
 /**
@@ -52,6 +56,10 @@ const DESTINATION_ENTITY_IDS: Record<string, { entityId: string; city: string }>
   FLL: { entityId: '104120241', city: 'Fort Lauderdale' },
   DFW: { entityId: '95673499', city: 'Dallas' },
   TPA: { entityId: '95673870', city: 'Tampa' },
+  // ChicaGoWhere destinations - added 2026-10-23
+  SEA: { entityId: '95673535', city: 'Seattle' },
+  PDX: { entityId: '95673584', city: 'Portland' },
+  SLC: { entityId: '95673611', city: 'Salt Lake City' },
 };
 
 /**
