@@ -53,9 +53,7 @@ jobs:
         run: |
           DATE=$(date +%Y-%m-%d)
           TIME=$(date +%H%M)
-          TOTAL_DEALS=0
-          DEALS_FOUND=""
-          PRICE_SUMMARY=""
+          CSV_FILES=""
           
           # Determine which destinations to search
           if [ "${{ github.event.inputs.destination }}" != "" ] && [ "${{ github.event.inputs.destination }}" != "ALL" ]; then
@@ -68,7 +66,7 @@ jobs:
             echo "🔍 Searching ORD/MDW → $DEST..."
             FILENAME="results/chicagowhere_${DEST}_${DATE}_${TIME}.csv"
             
-            # Search with higher max price to always find something, then filter
+            # Search with higher max price to always find something, then filter locally
             node dist/cli.js \
               --from BOTH \
               --destination "$DEST" \
@@ -76,152 +74,79 @@ jobs:
               --return-days ${RETURN_DAYS} \
               --max-price 500 \
               --limit 10 \
-              --export "$FILENAME" 2>&1 | tee search_output_${DEST}.txt || true
+              --export "$FILENAME" 2>&1 || true
             
             if [ -f "$FILENAME" ]; then
-              COUNT=$(wc -l < "$FILENAME")
-              COUNT=$((COUNT - 1))  # Subtract header row
-              
-              if [ $COUNT -gt 0 ]; then
-                # Get the cheapest flight details (first data row)
-                # CSV columns: price,origin,destination,departure_date,departure_time,arrival_time,airline,duration_minutes,stops,booking_url
-                CHEAPEST_ROW=$(tail -n +2 "$FILENAME" | head -1)
-                CHEAPEST=$(echo "$CHEAPEST_ROW" | cut -d',' -f1)
-                DEPART_DATE=$(echo "$CHEAPEST_ROW" | cut -d',' -f4)
-                ORIGIN=$(echo "$CHEAPEST_ROW" | cut -d',' -f2)
-                
-                # Count deals under threshold
-                DEALS_UNDER_THRESHOLD=$(tail -n +2 "$FILENAME" | awk -F',' -v max="${MAX_PRICE}" '$1 < max' | wc -l)
-                
-                if [ $DEALS_UNDER_THRESHOLD -gt 0 ]; then
-                  TOTAL_DEALS=$((TOTAL_DEALS + DEALS_UNDER_THRESHOLD))
-                  DEALS_FOUND="${DEALS_FOUND}${DEST}:${DEALS_UNDER_THRESHOLD} "
-                  echo "✅ Found $DEALS_UNDER_THRESHOLD deals for $DEST under \$${MAX_PRICE} (cheapest: \$${CHEAPEST} on ${DEPART_DATE})"
-                else
-                  echo "ℹ️ No deals under \$${MAX_PRICE} for $DEST (cheapest found: \$${CHEAPEST} on ${DEPART_DATE})"
-                fi
-                
-                # Add to price summary with date and origin: DEST:$PRICE:DATE:ORIGIN
-                PRICE_SUMMARY="${PRICE_SUMMARY}${DEST}:\$${CHEAPEST}:${DEPART_DATE}:${ORIGIN} "
-              else
-                echo "❌ No flights found for $DEST"
-                PRICE_SUMMARY="${PRICE_SUMMARY}${DEST}:N/A:N/A:N/A "
-                rm -f "$FILENAME"  # Remove empty file
-              fi
-            else
-              echo "❌ Search failed for $DEST"
-              PRICE_SUMMARY="${PRICE_SUMMARY}${DEST}:ERR:N/A:N/A "
+              CSV_FILES="$CSV_FILES $FILENAME"
             fi
             
             # Small delay between destinations to be nice to the API
             sleep 2
           done
           
-          echo "total_deals=$TOTAL_DEALS" >> $GITHUB_OUTPUT
-          echo "deals_found=$DEALS_FOUND" >> $GITHUB_OUTPUT
-          echo "price_summary=$PRICE_SUMMARY" >> $GITHUB_OUTPUT
+          echo "csv_files=$CSV_FILES" >> $GITHUB_OUTPUT
+
+      - name: Analyze results
+        id: analyze
+        env:
+          MAX_PRICE: ${{ env.MAX_PRICE }}
+        run: |
+          CSV_FILES="${{ steps.search.outputs.csv_files }}"
           
-          if [ $TOTAL_DEALS -gt 0 ]; then
+          if [ -z "$CSV_FILES" ]; then
+            echo "No CSV files to analyze"
+            echo "status=no_results" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Run analyzer script
+          ANALYSIS=$(node scripts/chicagowhere-analyze.js $CSV_FILES)
+          
+          # Extract values from JSON output
+          TOTAL_DEALS=$(echo "$ANALYSIS" | jq -r '.summary.dealsFound')
+          MESSAGE=$(echo "$ANALYSIS" | jq -r '.message')
+          BOOKING_LINKS=$(echo "$ANALYSIS" | jq -r '.bookingLinks // empty')
+          
+          # Save message to file (for multiline output)
+          echo "$MESSAGE" > /tmp/telegram_message.txt
+          if [ -n "$BOOKING_LINKS" ]; then
+            echo "" >> /tmp/telegram_message.txt
+            echo "$BOOKING_LINKS" >> /tmp/telegram_message.txt
+          fi
+          
+          echo "total_deals=$TOTAL_DEALS" >> $GITHUB_OUTPUT
+          
+          if [ "$TOTAL_DEALS" -gt 0 ]; then
             echo "status=success" >> $GITHUB_OUTPUT
           else
             echo "status=no_deals" >> $GITHUB_OUTPUT
           fi
 
       - name: Commit results
-        if: steps.search.outputs.status == 'success'
+        if: steps.analyze.outputs.status == 'success' || steps.analyze.outputs.status == 'no_deals'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add results/
-          git diff --cached --quiet || git commit -m "chicagowhere: ${{ steps.search.outputs.deals_found }} deals under \$${MAX_PRICE} $(date +%Y-%m-%d)"
+          git add results/ data/
+          git diff --cached --quiet || git commit -m "chicagowhere: ${{ steps.analyze.outputs.total_deals }} deals under \$${MAX_PRICE} $(date +%Y-%m-%d)"
           git push
 
-      - name: Send Telegram alert - Deals found!
-        if: steps.search.outputs.status == 'success' && env.TELEGRAM_BOT_TOKEN != ''
+      - name: Send Telegram alert
+        if: (steps.analyze.outputs.status == 'success' || steps.analyze.outputs.status == 'no_deals') && env.TELEGRAM_BOT_TOKEN != ''
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          TOTAL=${{ steps.search.outputs.total_deals }}
-          DEALS="${{ steps.search.outputs.deals_found }}"
-          PRICES="${{ steps.search.outputs.price_summary }}"
+          MESSAGE=$(cat /tmp/telegram_message.txt)
           RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           
-          # Build price breakdown with city names and dates
-          # Format: DEST:$PRICE:DATE:ORIGIN
-          BREAKDOWN=""
-          for ITEM in $PRICES; do
-            DEST=$(echo $ITEM | cut -d: -f1)
-            PRICE=$(echo $ITEM | cut -d: -f2)
-            DEPART_DATE=$(echo $ITEM | cut -d: -f3)
-            ORIGIN=$(echo $ITEM | cut -d: -f4)
-            
-            case $DEST in
-              SEA) CITY="Seattle" ;;
-              PDX) CITY="Portland" ;;
-              SLC) CITY="Salt Lake City" ;;
-              LAS) CITY="Las Vegas" ;;
-              *) CITY=$DEST ;;
-            esac
-            
-            # Check if this destination has deals under threshold
-            DEAL_COUNT=$(echo "$DEALS" | grep -o "${DEST}:[0-9]*" | cut -d: -f2 || echo "0")
-            if [ -n "$DEAL_COUNT" ] && [ "$DEAL_COUNT" != "0" ]; then
-              BREAKDOWN="${BREAKDOWN}✅ *${CITY}*: ${PRICE} from ${ORIGIN}\n   📅 ${DEPART_DATE} (${DEAL_COUNT} deals)\n"
-            else
-              BREAKDOWN="${BREAKDOWN}• *${CITY}*: ${PRICE} from ${ORIGIN}\n   📅 ${DEPART_DATE}\n"
-            fi
-          done
-          
-          MESSAGE="✈️ *ChicaGoWhere Alert!*
-          
-🎉 *${TOTAL} flights under \$${MAX_PRICE}!*
+          # Append view link
+          MESSAGE="${MESSAGE}
 
-*Cheapest Round-Trip Prices:*
-${BREAKDOWN}
-📋 [View all deals](${RUN_URL})"
+📋 [View run details](${RUN_URL})"
           
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
             -d parse_mode="Markdown" \
             --data-urlencode "text=${MESSAGE}" \
             -d disable_web_page_preview=true
-
-      - name: Send Telegram notice - No deals but show prices
-        if: steps.search.outputs.status == 'no_deals' && env.TELEGRAM_BOT_TOKEN != ''
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          PRICES="${{ steps.search.outputs.price_summary }}"
-          
-          # Build price breakdown with city names and dates
-          BREAKDOWN=""
-          for ITEM in $PRICES; do
-            DEST=$(echo $ITEM | cut -d: -f1)
-            PRICE=$(echo $ITEM | cut -d: -f2)
-            DEPART_DATE=$(echo $ITEM | cut -d: -f3)
-            ORIGIN=$(echo $ITEM | cut -d: -f4)
-            
-            case $DEST in
-              SEA) CITY="Seattle" ;;
-              PDX) CITY="Portland" ;;
-              SLC) CITY="Salt Lake City" ;;
-              LAS) CITY="Las Vegas" ;;
-              *) CITY=$DEST ;;
-            esac
-            BREAKDOWN="${BREAKDOWN}• *${CITY}*: ${PRICE} from ${ORIGIN}\n   📅 ${DEPART_DATE}\n"
-          done
-          
-          MESSAGE="✈️ *ChicaGoWhere Report*
-
-No deals under \$${MAX_PRICE} today, but here are the cheapest prices found:
-
-*Cheapest Round-Trip Prices:*
-${BREAKDOWN}
-Will check again in a few days!"
-          
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d chat_id="${TELEGRAM_CHAT_ID}" \
-            -d parse_mode="Markdown" \
-            --data-urlencode "text=${MESSAGE}"
