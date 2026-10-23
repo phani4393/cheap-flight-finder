@@ -83,8 +83,12 @@ jobs:
               COUNT=$((COUNT - 1))  # Subtract header row
               
               if [ $COUNT -gt 0 ]; then
-                # Get the cheapest price (first data row, first column after header)
-                CHEAPEST=$(tail -n +2 "$FILENAME" | head -1 | cut -d',' -f1)
+                # Get the cheapest flight details (first data row)
+                # CSV columns: price,origin,destination,departure_date,departure_time,arrival_time,airline,duration_minutes,stops,booking_url
+                CHEAPEST_ROW=$(tail -n +2 "$FILENAME" | head -1)
+                CHEAPEST=$(echo "$CHEAPEST_ROW" | cut -d',' -f1)
+                DEPART_DATE=$(echo "$CHEAPEST_ROW" | cut -d',' -f4)
+                ORIGIN=$(echo "$CHEAPEST_ROW" | cut -d',' -f2)
                 
                 # Count deals under threshold
                 DEALS_UNDER_THRESHOLD=$(tail -n +2 "$FILENAME" | awk -F',' -v max="${MAX_PRICE}" '$1 < max' | wc -l)
@@ -92,21 +96,21 @@ jobs:
                 if [ $DEALS_UNDER_THRESHOLD -gt 0 ]; then
                   TOTAL_DEALS=$((TOTAL_DEALS + DEALS_UNDER_THRESHOLD))
                   DEALS_FOUND="${DEALS_FOUND}${DEST}:${DEALS_UNDER_THRESHOLD} "
-                  echo "✅ Found $DEALS_UNDER_THRESHOLD deals for $DEST under \$${MAX_PRICE} (cheapest: \$${CHEAPEST})"
+                  echo "✅ Found $DEALS_UNDER_THRESHOLD deals for $DEST under \$${MAX_PRICE} (cheapest: \$${CHEAPEST} on ${DEPART_DATE})"
                 else
-                  echo "ℹ️ No deals under \$${MAX_PRICE} for $DEST (cheapest found: \$${CHEAPEST})"
+                  echo "ℹ️ No deals under \$${MAX_PRICE} for $DEST (cheapest found: \$${CHEAPEST} on ${DEPART_DATE})"
                 fi
                 
-                # Always add to price summary
-                PRICE_SUMMARY="${PRICE_SUMMARY}${DEST}:\$${CHEAPEST} "
+                # Add to price summary with date and origin: DEST:$PRICE:DATE:ORIGIN
+                PRICE_SUMMARY="${PRICE_SUMMARY}${DEST}:\$${CHEAPEST}:${DEPART_DATE}:${ORIGIN} "
               else
                 echo "❌ No flights found for $DEST"
-                PRICE_SUMMARY="${PRICE_SUMMARY}${DEST}:N/A "
+                PRICE_SUMMARY="${PRICE_SUMMARY}${DEST}:N/A:N/A:N/A "
                 rm -f "$FILENAME"  # Remove empty file
               fi
             else
               echo "❌ Search failed for $DEST"
-              PRICE_SUMMARY="${PRICE_SUMMARY}${DEST}:ERR "
+              PRICE_SUMMARY="${PRICE_SUMMARY}${DEST}:ERR:N/A:N/A "
             fi
             
             # Small delay between destinations to be nice to the API
@@ -143,11 +147,15 @@ jobs:
           PRICES="${{ steps.search.outputs.price_summary }}"
           RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           
-          # Build price breakdown with city names
+          # Build price breakdown with city names and dates
+          # Format: DEST:$PRICE:DATE:ORIGIN
           BREAKDOWN=""
           for ITEM in $PRICES; do
             DEST=$(echo $ITEM | cut -d: -f1)
             PRICE=$(echo $ITEM | cut -d: -f2)
+            DEPART_DATE=$(echo $ITEM | cut -d: -f3)
+            ORIGIN=$(echo $ITEM | cut -d: -f4)
+            
             case $DEST in
               SEA) CITY="Seattle" ;;
               PDX) CITY="Portland" ;;
@@ -159,9 +167,9 @@ jobs:
             # Check if this destination has deals under threshold
             DEAL_COUNT=$(echo "$DEALS" | grep -o "${DEST}:[0-9]*" | cut -d: -f2 || echo "0")
             if [ -n "$DEAL_COUNT" ] && [ "$DEAL_COUNT" != "0" ]; then
-              BREAKDOWN="${BREAKDOWN}✅ ${CITY}: ${PRICE} (${DEAL_COUNT} deals)\n"
+              BREAKDOWN="${BREAKDOWN}✅ *${CITY}*: ${PRICE} from ${ORIGIN}\n   📅 ${DEPART_DATE} (${DEAL_COUNT} deals)\n"
             else
-              BREAKDOWN="${BREAKDOWN}• ${CITY}: ${PRICE}\n"
+              BREAKDOWN="${BREAKDOWN}• *${CITY}*: ${PRICE} from ${ORIGIN}\n   📅 ${DEPART_DATE}\n"
             fi
           done
           
@@ -187,11 +195,14 @@ ${BREAKDOWN}
         run: |
           PRICES="${{ steps.search.outputs.price_summary }}"
           
-          # Build price breakdown with city names
+          # Build price breakdown with city names and dates
           BREAKDOWN=""
           for ITEM in $PRICES; do
             DEST=$(echo $ITEM | cut -d: -f1)
             PRICE=$(echo $ITEM | cut -d: -f2)
+            DEPART_DATE=$(echo $ITEM | cut -d: -f3)
+            ORIGIN=$(echo $ITEM | cut -d: -f4)
+            
             case $DEST in
               SEA) CITY="Seattle" ;;
               PDX) CITY="Portland" ;;
@@ -199,7 +210,7 @@ ${BREAKDOWN}
               LAS) CITY="Las Vegas" ;;
               *) CITY=$DEST ;;
             esac
-            BREAKDOWN="${BREAKDOWN}• ${CITY}: ${PRICE}\n"
+            BREAKDOWN="${BREAKDOWN}• *${CITY}*: ${PRICE} from ${ORIGIN}\n   📅 ${DEPART_DATE}\n"
           done
           
           MESSAGE="✈️ *ChicaGoWhere Report*
